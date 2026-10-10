@@ -1,0 +1,11 @@
+/build/bin/
+/frontend/node_modules/
+/frontend/dist/*
+!/frontend/dist/gitkeep
+/logs/
+*.log
+.agents/config.md
+.agents/.env
+.codex/
+__pycache__/
+*.py[cod]
