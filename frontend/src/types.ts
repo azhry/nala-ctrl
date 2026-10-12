@@ -1,5 +1,7 @@
 export interface Project {
+  id: string;
   name: string;
+  folder: string;
   cwd: string;
   run: string;
   port?: number | null;
@@ -42,12 +44,14 @@ export interface ProjectDetails extends Project {
 }
 
 export interface ProjectLogEvent {
+  projectId: string;
   project: string;
   line: string;
   logSize: number;
 }
 
 export interface ProjectStateEvent {
+  projectId: string;
   project: string;
   running: boolean;
   pid: number;

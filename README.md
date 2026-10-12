@@ -1,10 +1,10 @@
 # Nala Ctrl
 
-Nala Ctrl is a desktop app for running and monitoring a configured project and its logs. It starts the configured run command, captures output, and shows recent log lines. When the configured port is already in use, the app identifies its owner and asks before stopping it.
+Nala Ctrl is a desktop app for running and monitoring configured projects and their logs. It starts each configured run command, captures output, and shows recent log lines. When a configured port is already in use, the app identifies its owner and asks before stopping it.
 
 ## Project configuration
 
-Choose a project folder that contains `nala.yml`. One `nala.yml` file defines exactly one project, named from the selected folder basename. If the file is missing, Nala Ctrl can create a config with `cwd` and `run`; `port` is optional and can be inferred from the run command.
+Add project folders that contain `nala.yml`. Each file defines exactly one project, named from its folder basename. You can add multiple folders and switch between their logs while their processes keep running. If a file is missing, Nala Ctrl can create a config with `cwd` and `run`; `port` is optional and can be inferred from the run command.
 
 ```yaml
 cwd: .
@@ -17,7 +17,7 @@ log: logs/application.log
 - port is optional. Nala Ctrl detects common explicit port flags, Go --addr host:port listener addresses, and known defaults for Vite, Next.js, Python's HTTP server, and webpack. Set it explicitly when your command uses a different port. Without a detected port, the app can still run and capture logs, but cannot check for a port conflict first.
 - log is optional and sets the log file path. By default, process output is appended to logs/<folder-name>.log under cwd.
 
-Only the one project in the selected folder's `nala.yml` appears in the app. Choose another folder to switch projects. The Run and Stop controls manage the command started by Nala Ctrl. Closing the app stops processes it started.
+Each folder you add contributes one project to the list. Select any project to monitor its status and logs; switching projects does not stop running commands. Run and Stop manage that project's command. Closing the app stops every process it started.
 
 ## Development
 

@@ -108,13 +108,19 @@ func (m *Manager) workspaceLocked() *WorkspaceState {
 		Folder: m.folder, NeedsConfig: m.needsConfig,
 		Projects: make([]Project, 0, len(m.projects)),
 	}
-	names := make([]string, 0, len(m.projects))
-	for name := range m.projects {
-		names = append(names, name)
+	ids := make([]string, 0, len(m.projects))
+	for id := range m.projects {
+		ids = append(ids, id)
 	}
-	sort.Strings(names)
-	for _, name := range names {
-		state.Projects = append(state.Projects, m.projects[name].Project)
+	sort.Slice(ids, func(i, j int) bool {
+		left, right := m.projects[ids[i]].Project, m.projects[ids[j]].Project
+		if left.Name != right.Name {
+			return strings.ToLower(left.Name) < strings.ToLower(right.Name)
+		}
+		return strings.ToLower(left.Folder) < strings.ToLower(right.Folder)
+	})
+	for _, id := range ids {
+		state.Projects = append(state.Projects, m.projects[id].Project)
 	}
 	return state
 }
@@ -138,34 +144,35 @@ func (m *Manager) LoadFolder(folder string) (*WorkspaceState, error) {
 
 	configPath := filepath.Join(folder, configFilename)
 	data, readErr := os.ReadFile(configPath)
-	var projects map[string]projectSpec
+	var spec projectSpec
 	needsConfig := false
 	if readErr != nil {
 		if !errors.Is(readErr, os.ErrNotExist) {
 			return nil, fmt.Errorf("read %s: %w", configFilename, readErr)
 		}
 		needsConfig = true
-		projects = make(map[string]projectSpec)
 	} else {
 		file, err := decodeProjectFile(data)
 		if err != nil {
 			return nil, err
 		}
-		spec, err := projectForFolder(folder, file)
+		spec, err = projectForFolder(folder, file)
 		if err != nil {
 			return nil, err
 		}
-		projects = map[string]projectSpec{spec.Name: spec}
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if len(m.running) > 0 || len(m.starting) > 0 {
-		return nil, errors.New("stop running projects before changing folders")
-	}
 	m.folder = folder
 	m.needsConfig = needsConfig
-	m.projects = projects
+	if !needsConfig {
+		// Loading a folder adds it to this app session. Re-adding a folder
+		// selects its existing project without replacing its process or log state.
+		if _, exists := m.projects[spec.ID]; !exists {
+			m.projects[spec.ID] = spec
+		}
+	}
 	return m.workspaceLocked(), nil
 }
 
@@ -183,13 +190,31 @@ func (m *Manager) CreateConfig(input CreateProjectInput) (*WorkspaceState, error
 	return m.LoadFolder(folder)
 }
 
-func (m *Manager) GetProjectDetails(name string) (*ProjectDetails, error) {
+func (m *Manager) resolveProjectLocked(idOrName string) (string, projectSpec, bool) {
+	if spec, exists := m.projects[idOrName]; exists {
+		return idOrName, spec, true
+	}
+	var matchID string
+	var match projectSpec
+	for id, spec := range m.projects {
+		if spec.Name != idOrName {
+			continue
+		}
+		if matchID != "" {
+			return "", projectSpec{}, false
+		}
+		matchID, match = id, spec
+	}
+	return matchID, match, matchID != ""
+}
+
+func (m *Manager) GetProjectDetails(idOrName string) (*ProjectDetails, error) {
 	m.mu.RLock()
-	spec, exists := m.projects[name]
-	managed := m.running[name]
+	id, spec, exists := m.resolveProjectLocked(idOrName)
+	managed := m.running[id]
 	m.mu.RUnlock()
 	if !exists {
-		return nil, fmt.Errorf("project %q is not in the selected nala.yml", name)
+		return nil, fmt.Errorf("project %q is not loaded; choose its folder first or use its folder path when names repeat", idOrName)
 	}
 
 	details := &ProjectDetails{
@@ -211,9 +236,11 @@ func (m *Manager) GetProjectDetails(name string) (*ProjectDetails, error) {
 		}
 		if owner != nil {
 			m.mu.RLock()
-			for projectName, process := range m.running {
+			for projectID, process := range m.running {
 				if process.pid == owner.PID {
-					owner.ManagedProject = projectName
+					if managedSpec, ok := m.projects[projectID]; ok {
+						owner.ManagedProject = managedSpec.Name
+					}
 					break
 				}
 			}
@@ -230,40 +257,40 @@ func (m *Manager) GetProjectDetails(name string) (*ProjectDetails, error) {
 	return details, nil
 }
 
-func (m *Manager) beginStart(name string) (projectSpec, error) {
+func (m *Manager) beginStart(idOrName string) (string, projectSpec, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	spec, exists := m.projects[name]
+	id, spec, exists := m.resolveProjectLocked(idOrName)
 	if !exists {
-		return projectSpec{}, fmt.Errorf("project %q is not in the selected nala.yml", name)
+		return "", projectSpec{}, fmt.Errorf("project %q is not loaded; choose its folder first or use its folder path when names repeat", idOrName)
 	}
-	if process := m.running[name]; process != nil {
+	if process := m.running[id]; process != nil {
 		select {
 		case <-process.done:
-			delete(m.running, name)
+			delete(m.running, id)
 		default:
-			return projectSpec{}, fmt.Errorf("project %q is already running", name)
+			return "", projectSpec{}, fmt.Errorf("project %q is already running", spec.Name)
 		}
 	}
-	if m.starting[name] {
-		return projectSpec{}, fmt.Errorf("project %q is already starting", name)
+	if m.starting[id] {
+		return "", projectSpec{}, fmt.Errorf("project %q is already starting", spec.Name)
 	}
-	m.starting[name] = true
-	return spec, nil
+	m.starting[id] = true
+	return id, spec, nil
 }
 
-func (m *Manager) finishStart(name string) {
+func (m *Manager) finishStart(id string) {
 	m.mu.Lock()
-	delete(m.starting, name)
+	delete(m.starting, id)
 	m.mu.Unlock()
 }
 
-func (m *Manager) RunProject(name string) (RunResult, error) {
-	spec, err := m.beginStart(name)
+func (m *Manager) RunProject(idOrName string) (RunResult, error) {
+	id, spec, err := m.beginStart(idOrName)
 	if err != nil {
 		return RunResult{}, err
 	}
-	defer m.finishStart(name)
+	defer m.finishStart(id)
 	if spec.Port != nil {
 		owner, err := findPortOwner(*spec.Port)
 		if err != nil {
@@ -274,15 +301,15 @@ func (m *Manager) RunProject(name string) (RunResult, error) {
 			return RunResult{PortOwner: owner}, nil
 		}
 	}
-	return m.startProject(spec)
+	return m.startProject(id, spec)
 }
 
-func (m *Manager) TerminatePortOwnerAndRun(name string, pid int32, createTime int64) (RunResult, error) {
-	spec, err := m.beginStart(name)
+func (m *Manager) TerminatePortOwnerAndRun(idOrName string, pid int32, createTime int64) (RunResult, error) {
+	id, spec, err := m.beginStart(idOrName)
 	if err != nil {
 		return RunResult{}, err
 	}
-	defer m.finishStart(name)
+	defer m.finishStart(id)
 	if spec.Port == nil {
 		return RunResult{}, errors.New("this project has no configured or detected port")
 	}
@@ -305,21 +332,23 @@ func (m *Manager) TerminatePortOwnerAndRun(name string, pid int32, createTime in
 	if err := waitForPortRelease(*spec.Port, owner); err != nil {
 		return RunResult{}, err
 	}
-	return m.startProject(spec)
+	return m.startProject(id, spec)
 }
 
 func (m *Manager) markManagedOwner(owner *ProcessIdentity) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	for projectName, process := range m.running {
+	for projectID, process := range m.running {
 		if process.pid == owner.PID {
-			owner.ManagedProject = projectName
+			if spec, ok := m.projects[projectID]; ok {
+				owner.ManagedProject = spec.Name
+			}
 			return
 		}
 	}
 }
 
-func (m *Manager) startProject(spec projectSpec) (RunResult, error) {
+func (m *Manager) startProject(projectID string, spec projectSpec) (RunResult, error) {
 	info, err := os.Stat(spec.WorkingDir)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("project folder %q: %w", spec.WorkingDir, err)
@@ -334,7 +363,7 @@ func (m *Manager) startProject(spec projectSpec) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, fmt.Errorf("open log file: %w", err)
 	}
-	logOutput, err := newProcessLogWriter(logFile, spec.Name, m.publishLog)
+	logOutput, err := newProcessLogWriter(logFile, projectID, spec.Name, m.publishLog)
 	if err != nil {
 		_ = logFile.Close()
 		return RunResult{}, fmt.Errorf("inspect project log: %w", err)
@@ -353,26 +382,30 @@ func (m *Manager) startProject(spec projectSpec) (RunResult, error) {
 	}
 	process := &managedProcess{command: command, pid: int32(command.Process.Pid), done: make(chan struct{})}
 	m.mu.Lock()
-	m.running[spec.Name] = process
+	m.running[projectID] = process
 	m.mu.Unlock()
-	m.publishState(ProjectStateEvent{Project: spec.Name, Running: true, PID: process.pid})
+	m.publishState(ProjectStateEvent{ProjectID: projectID, Project: spec.Name, Running: true, PID: process.pid})
 	go func() {
 		_ = command.Wait()
 		_ = logOutput.Close()
 		m.mu.Lock()
-		if m.running[spec.Name] == process {
-			delete(m.running, spec.Name)
+		if m.running[projectID] == process {
+			delete(m.running, projectID)
 		}
 		m.mu.Unlock()
 		close(process.done)
-		m.publishState(ProjectStateEvent{Project: spec.Name})
+		m.publishState(ProjectStateEvent{ProjectID: projectID, Project: spec.Name})
 	}()
 	return RunResult{Started: true, PID: process.pid}, nil
 }
 
-func (m *Manager) StopProject(name string) error {
+func (m *Manager) StopProject(idOrName string) error {
 	m.mu.RLock()
-	process := m.running[name]
+	id, _, exists := m.resolveProjectLocked(idOrName)
+	var process *managedProcess
+	if exists {
+		process = m.running[id]
+	}
 	m.mu.RUnlock()
 	if process == nil {
 		return nil

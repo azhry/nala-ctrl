@@ -6,8 +6,8 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// ProjectManager is the Wails-bound application service. It only manages
-// projects declared by the currently selected nala.yml.
+// ProjectManager is the Wails-bound application service. It manages projects
+// explicitly added from folders containing one nala.yml each.
 type ProjectManager struct {
 	ctx     context.Context
 	manager *Manager
@@ -33,7 +33,7 @@ func (p *ProjectManager) shutdown(ctx context.Context) {
 
 func (p *ProjectManager) ChooseFolder() (*WorkspaceState, error) {
 	folder, err := runtime.OpenDirectoryDialog(p.ctx, runtime.OpenDialogOptions{
-		Title: "Choose a folder containing nala.yml",
+		Title: "Add a project folder containing nala.yml",
 	})
 	if err != nil {
 		return nil, err
@@ -52,18 +52,18 @@ func (p *ProjectManager) CreateConfig(input CreateProjectInput) (*WorkspaceState
 	return p.manager.CreateConfig(input)
 }
 
-func (p *ProjectManager) GetProjectDetails(name string) (*ProjectDetails, error) {
-	return p.manager.GetProjectDetails(name)
+func (p *ProjectManager) GetProjectDetails(projectID string) (*ProjectDetails, error) {
+	return p.manager.GetProjectDetails(projectID)
 }
 
-func (p *ProjectManager) RunProject(name string) (RunResult, error) {
-	return p.manager.RunProject(name)
+func (p *ProjectManager) RunProject(projectID string) (RunResult, error) {
+	return p.manager.RunProject(projectID)
 }
 
-func (p *ProjectManager) TerminatePortOwnerAndRun(name string, pid int32, createTime int64) (RunResult, error) {
-	return p.manager.TerminatePortOwnerAndRun(name, pid, createTime)
+func (p *ProjectManager) TerminatePortOwnerAndRun(projectID string, pid int32, createTime int64) (RunResult, error) {
+	return p.manager.TerminatePortOwnerAndRun(projectID, pid, createTime)
 }
 
-func (p *ProjectManager) StopProject(name string) error {
-	return p.manager.StopProject(name)
+func (p *ProjectManager) StopProject(projectID string) error {
+	return p.manager.StopProject(projectID)
 }

@@ -6,7 +6,7 @@ Use this contract when a task or pull request asks for command or native desktop
 
 - Treat the issue or PR's verification steps as the contract. Preserve command text and expected results unless the task explicitly changes them.
 - Read `AGENTS.md`, relevant `.agents/knowledge/` files, and project run instructions. Resolve the repository root and exact Go, npm, or Wails command from those sources.
-- Use the single project configured in the selected `nala.yml`. Resolve `cwd`, `run`, `port`, and `log` from the configuration and project behavior. Do not substitute a different project or infer arbitrary host processes.
+- Use projects explicitly added to the app, with exactly one project configured in each folder's `nala.yml`. Resolve each project's `cwd`, `run`, `port`, and `log` from its configuration. Do not infer arbitrary host processes.
 - Use documented fixture projects. Do not introduce fake agent responses or mock/stub Codex completions or core agent-client methods in tests.
 
 ## Bash execution

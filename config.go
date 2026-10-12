@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -30,6 +31,8 @@ type CreateProjectInput struct {
 }
 
 type Project struct {
+	ID      string `json:"id"`
+	Folder  string `json:"folder"`
 	Name    string `json:"name"`
 	CWD     string `json:"cwd"`
 	Run     string `json:"run"`
@@ -88,6 +91,10 @@ func decodeProjectFile(data []byte) (projectFile, error) {
 }
 
 func projectForFolder(folder string, config projectFile) (projectSpec, error) {
+	folder, err := filepath.Abs(folder)
+	if err != nil {
+		return projectSpec{}, fmt.Errorf("resolve project folder: %w", err)
+	}
 	folder = filepath.Clean(folder)
 	name := filepath.Base(folder)
 	if name == "." || name == string(filepath.Separator) || strings.TrimSpace(name) == "" {
@@ -98,7 +105,7 @@ func projectForFolder(folder string, config projectFile) (projectSpec, error) {
 	if !filepath.IsAbs(workingDir) {
 		workingDir = filepath.Join(folder, workingDir)
 	}
-	workingDir, err := filepath.Abs(workingDir)
+	workingDir, err = filepath.Abs(workingDir)
 	if err != nil {
 		return projectSpec{}, fmt.Errorf("resolve cwd for %s: %w", name, err)
 	}
@@ -121,10 +128,19 @@ func projectForFolder(folder string, config projectFile) (projectSpec, error) {
 
 	return projectSpec{
 		Project: Project{
+			ID: projectIDForFolder(folder), Folder: folder,
 			Name: name, CWD: workingDir, Run: config.Run, Port: port, LogPath: logPath,
 		},
 		WorkingDir: workingDir,
 	}, nil
+}
+
+func projectIDForFolder(folder string) string {
+	identity := filepath.Clean(folder)
+	if runtime.GOOS == "windows" {
+		identity = strings.ToLower(identity)
+	}
+	return identity
 }
 func inferPort(command string) *int {
 	for _, pattern := range explicitPortPatterns {

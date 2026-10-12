@@ -22,17 +22,22 @@
 .workspace-card-copy small { overflow:hidden; color:#8d9a91; font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
 .workspace-chevron { width:14px; height:14px; color:#7e8c83; }
 .workspace-path { overflow:hidden; margin:9px 7px 0; color:#738078; font-family:var(--mono); font-size:9px; line-height:1.5; text-overflow:ellipsis; white-space:nowrap; }
-.project-nav-head { display:flex; align-items:center; gap:8px; margin:32px 8px 10px; color:#85928a; }
+.project-nav-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:32px 8px 10px; color:#85928a; }
+.add-project-button { display:grid; width:25px; height:25px; place-items:center; color:#9eafa2; border:1px solid rgba(190,221,200,.14); border-radius:6px; background:rgba(255,255,255,.025); cursor:pointer; }
+.add-project-button:hover { color:#e4eee5; border-color:rgba(190,221,200,.3); background:rgba(255,255,255,.075); }
+.add-project-button:disabled { opacity:.55; cursor:progress; }
+.add-project-button svg { width:14px; height:14px; }
 .project-count { display:grid; min-width:17px; height:17px; padding:0 4px; place-items:center; color:#aebbb2; border-radius:20px; background:rgba(255,255,255,.09); font-size:9px; letter-spacing:0; }
 .project-list { display:flex; flex-direction:column; gap:3px; }
-.project-item { display:flex; align-items:center; gap:10px; min-height:51px; padding:7px 9px; text-align:left; color:#bac5bd; border:1px solid transparent; border-radius:7px; background:transparent; cursor:pointer; transition:background .16s ease,color .16s ease; }
+.project-item { display:flex; align-items:center; gap:10px; min-height:62px; padding:7px 9px; text-align:left; color:#bac5bd; border:1px solid transparent; border-radius:7px; background:transparent; cursor:pointer; transition:background .16s ease,color .16s ease; }
 .project-item:hover { color:#eef2ed; background:rgba(255,255,255,.045); }
 .project-item.selected { color:#eef2ed; border-color:rgba(174,210,184,.12); background:rgba(174,210,184,.085); }
 .project-dot { width:7px; height:7px; flex:0 0 7px; border:1px solid #748078; border-radius:50%; background:transparent; }
 .project-dot.live { border-color:#a9d2b4; background:#a9d2b4; box-shadow:0 0 0 3px rgba(169,210,180,.12); }
-.project-item-copy { display:flex; min-width:0; flex:1; flex-direction:column; gap:5px; }
+.project-item-copy { display:flex; min-width:0; flex:1; flex-direction:column; gap:4px; }
 .project-item-copy strong { overflow:hidden; font-size:12px; font-weight:570; text-overflow:ellipsis; white-space:nowrap; }
-.project-item-copy small { color:#829087; font-family:var(--mono); font-size:8px; letter-spacing:.6px; }
+.project-item-copy small { overflow:hidden; color:#829087; font-family:var(--mono); font-size:8px; letter-spacing:.6px; text-overflow:ellipsis; white-space:nowrap; }
+.project-item-copy small.project-location { color:#718078; font-size:7px; letter-spacing:0; }
 .project-chevron { width:13px; height:13px; color:var(--sage); }
 .nav-empty { padding:12px 9px; color:#818e86; font-size:11px; line-height:1.55; }
 .sidebar-bottom { display:flex; flex-direction:column; gap:9px; margin-top:auto; padding:15px 8px 1px; border-top:1px solid rgba(255,255,255,.08); }
@@ -183,6 +188,11 @@
 .message-banner button svg { width:13px; height:13px; }
 .error-banner { color:#8b4f3e; border-color:#edcbbd; background:#fcf2ed; }
 .notice-banner { color:#4d7354; border-color:#d3e2d1; background:#f1f7ee; }
+.pending-setup-banner { display:flex; align-items:center; justify-content:space-between; gap:14px; margin-bottom:14px; padding:11px 13px; border:1px solid #d8e2d5; border-radius:7px; background:#f5f8f2; }
+.pending-setup-banner>span { display:flex; min-width:0; flex-direction:column; gap:4px; }
+.pending-setup-banner strong { overflow:hidden; color:#465b4b; font-size:11px; font-weight:620; text-overflow:ellipsis; white-space:nowrap; }
+.pending-setup-banner small { color:#7e8c80; font-size:10px; line-height:1.45; }
+.pending-setup-banner button { flex:0 0 auto; }
 .empty-project-state { display:flex; min-height:64vh; align-items:center; justify-content:center; flex-direction:column; text-align:center; }
 .empty-glyph { display:grid; width:48px; height:48px; margin-bottom:22px; place-items:center; color:#6c8b71; border:1px solid #d0ded0; border-radius:13px 13px 13px 4px; background:#f2f6f0; }
 .empty-glyph svg { width:22px; height:22px; }
@@ -277,6 +287,8 @@ button:focus-visible,.text-field:focus-visible { outline:2px solid #829e86; outl
   .log-controls { width:100%; justify-content:space-between; }
   .log-screen { min-height:290px; font-size:9px; }
   .log-panel-foot { align-items:flex-start; flex-direction:column; justify-content:center; gap:5px; padding:8px 12px; }
+  .pending-setup-banner { align-items:stretch; flex-direction:column; }
+  .pending-setup-banner button { width:100%; }
   .empty-project-state { min-height:54vh; padding:25px 10px; }
   .empty-project-state h1 { font-size:30px; }
   .conflict-dialog { padding:20px 17px 17px; }

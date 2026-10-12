@@ -39,6 +39,8 @@ export namespace main {
 	    }
 	}
 	export class Project {
+	    id: string;
+	    folder: string;
 	    name: string;
 	    cwd: string;
 	    run: string;
@@ -51,6 +53,8 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.folder = source["folder"];
 	        this.name = source["name"];
 	        this.cwd = source["cwd"];
 	        this.run = source["run"];
@@ -59,6 +63,8 @@ export namespace main {
 	    }
 	}
 	export class ProjectDetails {
+	    id: string;
+	    folder: string;
 	    name: string;
 	    cwd: string;
 	    run: string;
@@ -76,6 +82,8 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.folder = source["folder"];
 	        this.name = source["name"];
 	        this.cwd = source["cwd"];
 	        this.run = source["run"];

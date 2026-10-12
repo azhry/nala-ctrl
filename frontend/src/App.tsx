@@ -21,6 +21,15 @@ function folderName(path: string): string {
   return clean.split(/[\\/]/).pop() || path;
 }
 
+function sameFolder(left: string, right: string): boolean {
+  const normalize = (path: string) => path.replace(/[\\/]+$/, '').replace(/\\/g, '/');
+  const normalizedLeft = normalize(left);
+  const normalizedRight = normalize(right);
+  if (normalizedLeft === normalizedRight) return true;
+  return /^[a-z]:\//i.test(normalizedLeft) && /^[a-z]:\//i.test(normalizedRight)
+    && normalizedLeft.toLowerCase() === normalizedRight.toLowerCase();
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -35,21 +44,29 @@ function appendLogEvent(details: ProjectDetails, event: ProjectLogEvent): Projec
 function App() {
   const [workspace, setWorkspace] = useState<WorkspaceState>(emptyWorkspace);
   const [selectedProject, setSelectedProject] = useState('');
+  const selectedProjectRef = useRef('');
+  const [projectRunning, setProjectRunning] = useState<Record<string, boolean>>({});
+  const projectStateVersions = useRef<Record<string, number>>({});
   const [details, setDetails] = useState<ProjectDetails | null>(null);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [portConflict, setPortConflict] = useState<ProcessIdentity | null>(null);
+  const [portConflictProjectId, setPortConflictProjectId] = useState('');
   const [conflictError, setConflictError] = useState('');
   const [followLogs, setFollowLogs] = useState(true);
   const [form, setForm] = useState<CreateProjectInput>({ cwd: '.', run: 'go run .', port: '' });
   const logEndRef = useRef<HTMLDivElement>(null);
 
-  const refreshDetails = useCallback(async (projectName: string, isCurrent: () => boolean = () => true) => {
-    const next = await GetProjectDetails(projectName);
+  const refreshDetails = useCallback(async (projectId: string, isCurrent: () => boolean = () => selectedProjectRef.current === projectId) => {
+    const stateVersion = projectStateVersions.current[projectId] ?? 0;
+    const next = await GetProjectDetails(projectId);
+    if ((projectStateVersions.current[projectId] ?? 0) === stateVersion) {
+      setProjectRunning((current) => ({ ...current, [projectId]: next.running }));
+    }
     if (!isCurrent()) return next;
     setDetails((current) => {
-      if (current?.name === projectName && current.logSize > next.logSize) {
+      if (current?.id === projectId && current.logSize > next.logSize) {
         return { ...next, logLines: current.logLines, logSize: current.logSize };
       }
       return next;
@@ -58,9 +75,14 @@ function App() {
   }, []);
 
   const selected = useMemo(
-    () => workspace.projects.find((project) => project.name === selectedProject) ?? null,
+    () => workspace.projects.find((project) => project.id === selectedProject) ?? null,
     [workspace.projects, selectedProject],
   );
+
+  const selectProjectId = useCallback((projectId: string) => {
+    selectedProjectRef.current = projectId;
+    setSelectedProject(projectId);
+  }, []);
 
   const chooseFolder = useCallback(async () => {
     setBusyAction('folder');
@@ -70,46 +92,66 @@ function App() {
       const result = await ChooseFolder();
       if (!result) return;
       setWorkspace(result);
-      setDetails(null);
       setPortConflict(null);
-      setSelectedProject(result.projects[0]?.name ?? '');
-      setForm({ cwd: '.', run: 'go run .', port: '' });
+      setPortConflictProjectId('');
+      setConflictError('');
+      const previousProjectId = selectedProjectRef.current;
+      const addedProject = result.projects.find((project) => sameFolder(project.folder, result.folder) || sameFolder(project.id, result.folder));
+      const selectedStillExists = result.projects.some((project) => project.id === selectedProjectRef.current);
+      let nextProjectId = selectedStillExists ? selectedProjectRef.current : result.projects[0]?.id ?? '';
+      if (result.needsConfig) {
+        nextProjectId = '';
+        setForm({ cwd: '.', run: 'go run .', port: '' });
+      } else if (addedProject) {
+        nextProjectId = addedProject.id;
+      }
+      if (nextProjectId !== selectedProjectRef.current) setDetails(null);
+      selectProjectId(nextProjectId);
+      if (addedProject?.id === nextProjectId && addedProject.id === previousProjectId) {
+        void refreshDetails(addedProject.id).catch((caught) => setError(errorMessage(caught)));
+      }
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
       setBusyAction(null);
     }
-  }, []);
+  }, [refreshDetails, selectProjectId]);
+
+  useEffect(() => EventsOn(projectStateEventName, (event: ProjectStateEvent) => {
+    projectStateVersions.current[event.projectId] = (projectStateVersions.current[event.projectId] ?? 0) + 1;
+    setProjectRunning((current) => ({ ...current, [event.projectId]: event.running }));
+  }), []);
 
   useEffect(() => {
-    if (!selectedProject || workspace.needsConfig) {
+    if (!selected) {
       setDetails(null);
       return;
     }
+    const projectId = selected.id;
     let cancelled = false;
     let latestSnapshot: ProjectDetails | null = null;
     const pendingEvents: ProjectLogEvent[] = [];
     const unsubscribe = EventsOn(projectLogEventName, (event: ProjectLogEvent) => {
-      if (event.project !== selectedProject) return;
+      if (cancelled || selectedProjectRef.current !== projectId || event.projectId !== projectId) return;
       if (!latestSnapshot) {
         pendingEvents.push(event);
         return;
       }
       latestSnapshot = appendLogEvent(latestSnapshot, event);
       setDetails((current) => {
-        if (!current || current.name !== event.project) return latestSnapshot;
+        if (!current || current.id !== event.projectId) return current;
         return appendLogEvent(current, event);
       });
     });
     const unsubscribeState = EventsOn(projectStateEventName, (event: ProjectStateEvent) => {
-      if (event.project !== selectedProject) return;
-      void refreshDetails(selectedProject, () => !cancelled).then(() => {
+      if (cancelled || selectedProjectRef.current !== projectId || event.projectId !== projectId) return;
+      void refreshDetails(projectId, () => !cancelled && selectedProjectRef.current === projectId).then(() => {
         if (!cancelled) setError('');
       }).catch((caught) => {
         if (!cancelled) setError(errorMessage(caught));
       });
     });
-    void refreshDetails(selectedProject, () => !cancelled).then((initial) => {
+    void refreshDetails(projectId, () => !cancelled && selectedProjectRef.current === projectId).then((initial) => {
       if (cancelled) return;
       latestSnapshot = pendingEvents
         .filter((event) => event.logSize > initial.logSize)
@@ -126,7 +168,7 @@ function App() {
       unsubscribe();
       unsubscribeState();
     };
-  }, [selectedProject, workspace.folder, workspace.needsConfig, refreshDetails]);
+  }, [selected?.id, refreshDetails]);
 
   useEffect(() => {
     if (followLogs && details?.logLines.length) {
@@ -147,7 +189,10 @@ function App() {
     try {
       const next = await CreateConfig(form);
       setWorkspace(next);
-      setSelectedProject(next.projects[0]?.name ?? '');
+      const createdProject = next.projects.find((project) => sameFolder(project.folder, next.folder) || sameFolder(project.id, next.folder));
+      const nextProjectId = createdProject?.id ?? next.projects[0]?.id ?? '';
+      if (nextProjectId !== selectedProjectRef.current) setDetails(null);
+      selectProjectId(nextProjectId);
       setNotice('nala.yml created');
     } catch (caught) {
       setError(errorMessage(caught));
@@ -157,27 +202,32 @@ function App() {
   };
 
   const runProject = async () => {
-    if (!selectedProject) return;
+    if (!selected) return;
+    const projectId = selected.id;
+    const projectName = selected.name;
     setBusyAction('run');
     setError('');
     setNotice('');
     try {
-      const result = await RunProject(selectedProject);
+      const result = await RunProject(projectId);
       if (result.portOwner) {
-        setConflictError('');
-        setPortConflict(result.portOwner);
+        if (selectedProjectRef.current === projectId) {
+          setConflictError('');
+          setPortConflictProjectId(projectId);
+          setPortConflict(result.portOwner);
+        }
       } else if (result.started) {
-        setNotice(`Started ${selectedProject}`);
-        await refreshDetails(selectedProject);
+        if (selectedProjectRef.current === projectId) setNotice(`Started ${projectName}`);
+        await refreshDetails(projectId);
       }
     } catch (caught) {
       const message = errorMessage(caught);
       if (message.toLowerCase().includes('already running')) {
         try {
-          const current = await refreshDetails(selectedProject);
+          const current = await refreshDetails(projectId);
           if (current.running) {
             setError('');
-            setNotice(`${selectedProject} is already running`);
+            if (selectedProjectRef.current === projectId) setNotice(`${projectName} is already running`);
             return;
           }
         } catch (refreshError) {
@@ -192,15 +242,18 @@ function App() {
   };
 
   const terminateAndRun = async () => {
-    if (!selectedProject || !portConflict) return;
+    if (!selected || !portConflict || selected.id !== portConflictProjectId) return;
+    const projectId = selected.id;
+    const projectName = selected.name;
     setBusyAction('terminate');
     setConflictError('');
     try {
-      const result = await TerminatePortOwnerAndRun(selectedProject, portConflict.pid, portConflict.createTime);
+      const result = await TerminatePortOwnerAndRun(projectId, portConflict.pid, portConflict.createTime);
       if (result.started) {
         setPortConflict(null);
-        setNotice(`Started ${selectedProject}`);
-        await refreshDetails(selectedProject);
+        setPortConflictProjectId('');
+        if (selectedProjectRef.current === projectId) setNotice(`Started ${projectName}`);
+        await refreshDetails(projectId);
       } else if (result.portOwner) {
         setPortConflict(result.portOwner);
       }
@@ -212,13 +265,15 @@ function App() {
   };
 
   const stopProject = async () => {
-    if (!selectedProject) return;
+    if (!selected) return;
+    const projectId = selected.id;
+    const projectName = selected.name;
     setBusyAction('stop');
     setError('');
     try {
-      await StopProject(selectedProject);
-      await refreshDetails(selectedProject);
-      setNotice(`Stopped ${selectedProject}`);
+      await StopProject(projectId);
+      await refreshDetails(projectId);
+      if (selectedProjectRef.current === projectId) setNotice(`Stopped ${projectName}`);
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
@@ -227,16 +282,29 @@ function App() {
   };
 
   const selectProject = (project: Project) => {
-    if (project.name === selectedProject) {
+    if (project.id === selectedProject) {
       setError('');
       setNotice('');
-      void refreshDetails(project.name).catch((caught) => setError(errorMessage(caught)));
+      void refreshDetails(project.id).catch((caught) => setError(errorMessage(caught)));
       return;
     }
-    setSelectedProject(project.name);
+    selectProjectId(project.id);
     setDetails(null);
     setError('');
     setNotice('');
+    setPortConflict(null);
+    setPortConflictProjectId('');
+    setConflictError('');
+  };
+
+  const resumeSetup = () => {
+    selectProjectId('');
+    setDetails(null);
+    setError('');
+    setNotice('');
+    setPortConflict(null);
+    setPortConflictProjectId('');
+    setConflictError('');
   };
 
   return (
@@ -247,51 +315,52 @@ function App() {
           <div className="brand-type"><strong>nala<span>ctrl</span></strong><small>LOCAL PROCESS DESK</small></div>
         </div>
 
-        <div className="workspace-label">WORKSPACE</div>
-        <button className="workspace-card" onClick={chooseFolder} disabled={busyAction === 'folder'} title={workspace.folder || 'Choose a project folder'}>
+        <div className="workspace-label">LOCAL WORKSPACE</div>
+        <button className="workspace-card" onClick={chooseFolder} disabled={busyAction === 'folder'} title="Add a project from another folder">
           <span className="workspace-card-icon"><Icon name="folder" /></span>
           <span className="workspace-card-copy">
-            <strong>{workspace.folder ? folderName(workspace.folder) : 'Choose a folder'}</strong>
-            <small>{workspace.folder ? 'Click to switch workspace' : 'Select a folder with nala.yml'}</small>
+            <strong>{selected ? folderName(selected.folder) : workspace.folder ? folderName(workspace.folder) : 'Add a project folder'}</strong>
+            <small>{selected ? 'Add another project folder' : workspace.folder ? 'Folder selected' : 'Choose a folder with nala.yml'}</small>
           </span>
-          <Icon className="workspace-chevron" name="chevron" />
+          <Icon className="workspace-chevron" name="folder-plus" />
         </button>
-        {workspace.folder && <div className="workspace-path" title={workspace.folder}>{workspace.folder}</div>}
+        {(selected?.folder || workspace.folder) && <div className="workspace-path" title={selected?.folder || workspace.folder}>{selected?.folder || workspace.folder}</div>}
 
         <div className="project-nav-head">
-          <span>PROJECT</span>
+          <span>PROJECTS</span>
+          <button className="add-project-button" onClick={chooseFolder} disabled={busyAction === 'folder'} title="Add project folder" aria-label="Add project folder"><Icon name="folder-plus" /></button>
         </div>
-        <nav className="project-list" aria-label="Configured project">
+        <nav className="project-list" aria-label="Configured projects">
           {workspace.projects.map((project) => {
-            const active = project.name === selectedProject;
-            const live = active && details?.running;
+            const active = project.id === selectedProject;
+            const live = projectRunning[project.id] ?? (active && details?.running);
             return (
-              <button key={project.name} className={`project-item${active ? ' selected' : ''}`} onClick={() => selectProject(project)} aria-current={active ? 'page' : undefined}>
+              <button key={project.id} className={`project-item${active ? ' selected' : ''}`} onClick={() => selectProject(project)} aria-current={active ? 'page' : undefined} title={project.folder}>
                 <span className={`project-dot${live ? ' live' : ''}`} />
-                <span className="project-item-copy"><strong>{project.name}</strong><small>{project.port ? `PORT ${project.port}` : 'NO PORT CHECK'}</small></span>
+                <span className="project-item-copy"><strong>{project.name}</strong><small>{project.port ? `PORT ${project.port}` : 'NO PORT CHECK'}</small><small className="project-location">{project.folder}</small></span>
                 {active && <Icon className="project-chevron" name="chevron" />}
               </button>
             );
           })}
-          {!workspace.projects.length && workspace.folder && !workspace.needsConfig && <div className="nav-empty">No project is configured for this folder.</div>}
-          {!workspace.folder && <div className="nav-empty">Your project will appear here after you choose a folder.</div>}
+          {!workspace.projects.length && workspace.needsConfig && <div className="nav-empty">Finish setup to add this folder's project.</div>}
+          {!workspace.projects.length && !workspace.folder && <div className="nav-empty">Add a project folder to get started.</div>}
         </nav>
 
         <div className="sidebar-bottom">
           <span className="local-indicator"><i /> LOCAL MACHINE</span>
-          <span className="sidebar-footnote">The project from the selected nala.yml is managed.</span>
+          <span className="sidebar-footnote">Each added folder contributes one project. Switching projects leaves running processes alone.</span>
         </div>
       </aside>
 
       <main className="main-area">
         <header className="topbar">
           <div className="breadcrumb">
-            <span>WORKSPACE</span><Icon name="chevron" /><strong>{workspace.folder ? folderName(workspace.folder) : 'No folder selected'}</strong>
+            <span>PROJECTS</span><Icon name="chevron" /><strong>{selected ? folderName(selected.folder) : workspace.folder ? folderName(workspace.folder) : 'No folder selected'}</strong>
             {selected && <><Icon name="chevron" /><span className="crumb-project">{selected.name}</span></>}
           </div>
           <div className="topbar-actions">
-            {workspace.folder && <span className="local-pill"><i /> This machine</span>}
-            <button className="icon-button" onClick={chooseFolder} title="Choose another folder" aria-label="Choose another folder" disabled={busyAction === 'folder'}><Icon name="folder" /></button>
+            {(workspace.folder || workspace.projects.length > 0) && <span className="local-pill"><i /> This machine</span>}
+            <button className="icon-button" onClick={chooseFolder} title="Add project folder" aria-label="Add project folder" disabled={busyAction === 'folder'}><Icon name="folder-plus" /></button>
           </div>
         </header>
 
@@ -299,20 +368,26 @@ function App() {
           {error && <div className="message-banner error-banner" role="alert"><Icon name="warning" /><span>{error}</span><button onClick={() => setError('')} aria-label="Dismiss error"><Icon name="close" /></button></div>}
           {notice && <div className="message-banner notice-banner" role="status"><Icon name="check" /><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Dismiss notification"><Icon name="close" /></button></div>}
 
-          {!workspace.folder && <WelcomeScreen onChoose={chooseFolder} busy={busyAction === 'folder'} />}
-          {workspace.folder && workspace.needsConfig && (
+          {!workspace.folder && !workspace.projects.length && <WelcomeScreen onChoose={chooseFolder} busy={busyAction === 'folder'} />}
+          {workspace.folder && workspace.needsConfig && !selected && (
             <SetupScreen folder={workspace.folder} form={form} setForm={setForm} onSubmit={createConfig} busy={busyAction === 'config'} />
+          )}
+          {workspace.folder && workspace.needsConfig && selected && (
+            <div className="pending-setup-banner" role="status">
+              <span><strong>{folderName(workspace.folder)} needs setup</strong><small>Existing projects keep running while you configure this folder.</small></span>
+              <button className="secondary-button" onClick={resumeSetup}>Finish setup for {folderName(workspace.folder)}</button>
+            </div>
           )}
           {workspace.folder && !workspace.needsConfig && workspace.projects.length === 0 && (
             <div className="empty-project-state">
               <div className="empty-glyph"><Icon name="server" /></div>
               <p className="eyebrow">NOTHING TO MANAGE</p>
               <h1>No project configured</h1>
-              <p>Reopen this folder to load its project from <code>nala.yml</code>.</p>
-              <button className="secondary-button" onClick={chooseFolder}><Icon name="refresh" /> Reopen folder</button>
+              <p>Add a folder that contains <code>nala.yml</code> to monitor its configured project.</p>
+              <button className="secondary-button" onClick={chooseFolder}><Icon name="folder-plus" /> Add project folder</button>
             </div>
           )}
-          {selected && !workspace.needsConfig && (
+          {selected && (
             <ProjectScreen
               project={selected}
               details={details}
@@ -321,20 +396,20 @@ function App() {
               logEndRef={logEndRef}
               onRun={runProject}
               onStop={stopProject}
-              onRefresh={() => void refreshDetails(selected.name).catch((caught) => setError(errorMessage(caught)))}
+              onRefresh={() => void refreshDetails(selected.id).catch((caught) => setError(errorMessage(caught)))}
               onToggleFollow={() => setFollowLogs((value) => !value)}
             />
           )}
         </div>
       </main>
 
-      {portConflict && selected && (
+      {portConflict && selected && selected.id === portConflictProjectId && (
         <PortConflictDialog
           project={selected}
           owner={portConflict}
           error={conflictError}
           busy={busyAction === 'terminate'}
-          onCancel={() => { setPortConflict(null); setConflictError(''); }}
+          onCancel={() => { setPortConflict(null); setPortConflictProjectId(''); setConflictError(''); }}
           onConfirm={terminateAndRun}
         />
       )}
