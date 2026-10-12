@@ -171,7 +171,21 @@ function App() {
         await refreshDetails(selectedProject);
       }
     } catch (caught) {
-      setError(errorMessage(caught));
+      const message = errorMessage(caught);
+      if (message.toLowerCase().includes('already running')) {
+        try {
+          const current = await refreshDetails(selectedProject);
+          if (current.running) {
+            setError('');
+            setNotice(`${selectedProject} is already running`);
+            return;
+          }
+        } catch (refreshError) {
+          setError(errorMessage(refreshError));
+          return;
+        }
+      }
+      setError(message);
     } finally {
       setBusyAction(null);
     }
@@ -213,6 +227,12 @@ function App() {
   };
 
   const selectProject = (project: Project) => {
+    if (project.name === selectedProject) {
+      setError('');
+      setNotice('');
+      void refreshDetails(project.name).catch((caught) => setError(errorMessage(caught)));
+      return;
+    }
     setSelectedProject(project.name);
     setDetails(null);
     setError('');
