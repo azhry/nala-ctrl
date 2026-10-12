@@ -5,8 +5,8 @@ Apply this workflow to Go application services, Wails bindings, configuration, p
 ## Contract and analysis
 
 - Read the named Linear issue and agent comment, `AGENTS.md`, and `.agents/knowledge/` before changing behavior.
-- Keep the app local-only. Nala Ctrl manages only projects in the selected `nala.yml`; it does not discover arbitrary host processes.
-- Trace configuration from YAML parsing through path resolution and the Wails/UI model. Preserve the `projects` map contract: required `cwd` and `run`, optional `port` and `log`.
+- Keep the app local-only. One selected folder and its nala.yml represent exactly one project; the app does not discover arbitrary host processes.
+- Trace configuration from YAML parsing through path resolution and the Wails/UI model. Use top-level cwd and run, with optional port and log; derive the project name from the selected folder basename.
 - Trace process ownership from command start through exit and app shutdown. Distinguish processes started by Nala Ctrl from external owners of a configured port.
 - Treat exact process identity and user confirmation as a safety boundary. Recheck PID and creation time immediately before terminating a port owner; refuse uncertain or changed identities.
 - Keep stdout/stderr capture, log-file append behavior, bounded log snapshots, and Wails event offsets/state transitions consistent with the knowledge docs.
@@ -14,7 +14,7 @@ Apply this workflow to Go application services, Wails bindings, configuration, p
 ## Implementation
 
 - Keep parsing/validation in `config.go`, process lifecycle in `manager.go`, port inspection in `ports.go`, OS-specific control in `process_windows.go` and `process_unix.go`, log handling in `log_writer.go`, and Wails bindings in `app.go` unless an issue justifies changing those seams.
-- Validate untrusted paths, project names, YAML fields, run commands, and port values. Never overwrite an existing `nala.yml` during first-run setup.
+- Validate untrusted paths, YAML fields, run commands, and port values. Never overwrite an existing nala.yml during first-run setup.
 - Start the configured command in its resolved `cwd`; capture both output streams; stop only app-managed process trees on Stop or app shutdown.
 - Avoid shell interpolation of user-controlled values where an argument API is available. Preserve platform-specific command behavior and report unsupported cases explicitly.
 - Use Wails events for incremental log and process-state updates. Remove listeners and goroutines when their owner exits.

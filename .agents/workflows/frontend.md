@@ -9,9 +9,9 @@ For UI implementation, follow the delegation requirement in `AGENTS.md`: use a d
 ## Implementation
 
 - Read `.agents/knowledge/architecture.md` and the issue's behavior contract before changing the UI.
-- Preserve the configured-project boundary: show only projects loaded from the selected `nala.yml`.
+- Preserve the configured-project boundary: show exactly one project from the selected folder and its nala.yml, named from that folder.
 - Use the existing Wails bindings and runtime events; do not invent a remote API or browser-only product flow.
-- Keep native folder selection, missing-config setup, project selection, Run/Stop, port conflict confirmation, log following, loading, empty, and error states observable.
+- Keep native folder selection, one-project missing-config setup, project selection, Run/Stop, port conflict confirmation, log following, loading, empty, and error states observable.
 - Keep `project:log` and `project:state` subscriptions scoped to the active view. Unsubscribe on unmount or project change, and avoid displaying stale state after Run, Stop, or a silent process exit.
 - Do not leave a clickable-looking control as a no-op. Implement it, remove it, or disable it with a clear explanation.
 - Use semantic buttons, labels, headings, and status/log roles. Support keyboard activation, visible focus, Escape to dismiss a non-busy dialog, and useful error announcements.

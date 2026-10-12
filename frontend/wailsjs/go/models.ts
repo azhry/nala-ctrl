@@ -1,7 +1,6 @@
 export namespace main {
 	
 	export class CreateProjectInput {
-	    name: string;
 	    cwd: string;
 	    run: string;
 	    port: string;
@@ -12,7 +11,6 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
 	        this.cwd = source["cwd"];
 	        this.run = source["run"];
 	        this.port = source["port"];

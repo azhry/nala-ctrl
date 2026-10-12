@@ -13,7 +13,6 @@ export interface WorkspaceState {
 }
 
 export interface CreateProjectInput {
-  name: string;
   cwd: string;
   run: string;
   port: string;

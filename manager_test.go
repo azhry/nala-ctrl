@@ -13,7 +13,7 @@ import (
 )
 
 func TestManagedProcessLifecycleAndLogCapture(t *testing.T) {
-	folder := t.TempDir()
+	folder := projectTestFolder(t, "backend")
 	manager := NewManager()
 	logEvents := make(chan ProjectLogEvent, 16)
 	manager.SetLogHandler(func(event ProjectLogEvent) { logEvents <- event })
@@ -21,7 +21,7 @@ func TestManagedProcessLifecycleAndLogCapture(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := manager.CreateConfig(CreateProjectInput{
-		Name: "backend", CWD: ".", Run: longRunningTestCommand(),
+		CWD: ".", Run: longRunningTestCommand(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestManagedProcessLifecycleAndLogCapture(t *testing.T) {
 }
 
 func TestProjectStateEventsCoverSilentExit(t *testing.T) {
-	folder := t.TempDir()
+	folder := projectTestFolder(t, "backend")
 	manager := NewManager()
 	stateEvents := make(chan ProjectStateEvent, 2)
 	manager.SetStateHandler(func(event ProjectStateEvent) { stateEvents <- event })
@@ -89,7 +89,7 @@ func TestProjectStateEventsCoverSilentExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := manager.CreateConfig(CreateProjectInput{
-		Name: "backend", CWD: ".", Run: successfulExitTestCommand(),
+		CWD: ".", Run: successfulExitTestCommand(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -127,8 +127,8 @@ func TestPortConflictReportsCurrentProcessAndRefusesToStopIt(t *testing.T) {
 	}
 	defer listener.Close()
 	port := listener.Addr().(*net.TCPAddr).Port
-	folder := t.TempDir()
-	if err := os.WriteFile(filepath.Join(folder, configFilename), []byte(fmt.Sprintf("projects:\n  backend:\n    cwd: .\n    run: %q\n    port: %d\n", "echo should-not-run", port)), 0644); err != nil {
+	folder := projectTestFolder(t, "backend")
+	if err := os.WriteFile(filepath.Join(folder, configFilename), []byte(fmt.Sprintf("cwd: .\nrun: %q\nport: %d\n", "echo should-not-run", port)), 0644); err != nil {
 		t.Fatal(err)
 	}
 	manager := NewManager()
@@ -192,8 +192,8 @@ func TestConfirmedPortTakeoverStopsExactOwnerAndRunsProject(t *testing.T) {
 		t.Fatalf("listener process identity = %#v, child PID = %d", childOwner, child.Process.Pid)
 	}
 
-	folder := t.TempDir()
-	config := fmt.Sprintf("projects:\n  backend:\n    cwd: .\n    run: %q\n    port: %d\n", "echo NALA_CTRL_TAKEOVER_STARTED", port)
+	folder := projectTestFolder(t, "backend")
+	config := fmt.Sprintf("cwd: .\nrun: %q\nport: %d\n", "echo NALA_CTRL_TAKEOVER_STARTED", port)
 	if err := os.WriteFile(filepath.Join(folder, configFilename), []byte(config), 0644); err != nil {
 		t.Fatal(err)
 	}

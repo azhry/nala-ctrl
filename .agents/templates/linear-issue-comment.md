@@ -34,7 +34,7 @@ Post this comment after the human-readable issue description is saved and before
 - In scope: [specific behavior and affected files/components].
 - Out of scope: [nearby behavior excluded by the issue or project architecture].
 - Assumptions/open questions: [only unresolved decisions; label assumptions].
-- Process safety: manage only entries from the selected `nala.yml`; any port-owner termination requires confirmation, a fresh identity check, and exact-process targeting.
+- Process safety: manage only the project configured by the selected `nala.yml`; any port-owner termination requires confirmation, a fresh identity check, and exact-process targeting.
 
 ## Implementation plan
 
@@ -46,7 +46,7 @@ Post this comment after the human-readable issue description is saved and before
 ## Definition of Done
 
 - [Every source requirement maps to an observable implemented outcome.]
-- Only projects declared in the selected `nala.yml` are shown and managed.
+- Only the project declared in the selected `nala.yml` is shown and managed.
 - [Configuration validation, logs, process lifecycle, port safety, and UI states relevant to scope are correct.]
 - Regression checks pass; failures are recorded with exact commands and affected paths.
 - Native Wails behavior is manually exercised when required, or clearly recorded as unverified.
@@ -73,7 +73,7 @@ Post this comment after the human-readable issue description is saved and before
 ## Completion self-audit
 
 - [ ] Every source requirement is implemented or documented as a blocker.
-- [ ] Process management remains limited to the selected `nala.yml`.
+- [ ] Process management remains limited to the one project in the selected `nala.yml`.
 - [ ] Port conflict handling cannot terminate a process without confirmation and revalidation.
 - [ ] Go/frontend commands and native actions have exact results or are marked unrun.
 - [ ] No unrelated files, secrets, generated diagnostics, or local session data are included.

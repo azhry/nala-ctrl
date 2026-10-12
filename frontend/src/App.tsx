@@ -42,7 +42,7 @@ function App() {
   const [portConflict, setPortConflict] = useState<ProcessIdentity | null>(null);
   const [conflictError, setConflictError] = useState('');
   const [followLogs, setFollowLogs] = useState(true);
-  const [form, setForm] = useState<CreateProjectInput>({ name: 'backend', cwd: '.', run: 'go run .', port: '' });
+  const [form, setForm] = useState<CreateProjectInput>({ cwd: '.', run: 'go run .', port: '' });
   const logEndRef = useRef<HTMLDivElement>(null);
 
   const refreshDetails = useCallback(async (projectName: string, isCurrent: () => boolean = () => true) => {
@@ -73,7 +73,7 @@ function App() {
       setDetails(null);
       setPortConflict(null);
       setSelectedProject(result.projects[0]?.name ?? '');
-      setForm({ name: 'backend', cwd: '.', run: 'go run .', port: '' });
+      setForm({ cwd: '.', run: 'go run .', port: '' });
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
@@ -259,10 +259,9 @@ function App() {
         {workspace.folder && <div className="workspace-path" title={workspace.folder}>{workspace.folder}</div>}
 
         <div className="project-nav-head">
-          <span>PROJECTS</span>
-          {workspace.projects.length > 0 && <span className="project-count">{workspace.projects.length}</span>}
+          <span>PROJECT</span>
         </div>
-        <nav className="project-list" aria-label="Configured projects">
+        <nav className="project-list" aria-label="Configured project">
           {workspace.projects.map((project) => {
             const active = project.name === selectedProject;
             const live = active && details?.running;
@@ -274,13 +273,13 @@ function App() {
               </button>
             );
           })}
-          {!workspace.projects.length && workspace.folder && !workspace.needsConfig && <div className="nav-empty">No projects in this config.</div>}
-          {!workspace.folder && <div className="nav-empty">Your configured projects will appear here.</div>}
+          {!workspace.projects.length && workspace.folder && !workspace.needsConfig && <div className="nav-empty">No project is configured for this folder.</div>}
+          {!workspace.folder && <div className="nav-empty">Your project will appear here after you choose a folder.</div>}
         </nav>
 
         <div className="sidebar-bottom">
           <span className="local-indicator"><i /> LOCAL MACHINE</span>
-          <span className="sidebar-footnote">Only projects in the selected nala.yml are managed.</span>
+          <span className="sidebar-footnote">The project from the selected nala.yml is managed.</span>
         </div>
       </aside>
 
@@ -308,8 +307,8 @@ function App() {
             <div className="empty-project-state">
               <div className="empty-glyph"><Icon name="server" /></div>
               <p className="eyebrow">NOTHING TO MANAGE</p>
-              <h1>No projects in nala.yml</h1>
-              <p>Add a project with <code>cwd</code> and <code>run</code>, then reopen this folder.</p>
+              <h1>No project configured</h1>
+              <p>Reopen this folder to load its project from <code>nala.yml</code>.</p>
               <button className="secondary-button" onClick={chooseFolder}><Icon name="refresh" /> Reopen folder</button>
             </div>
           )}
@@ -350,8 +349,8 @@ function WelcomeScreen({ onChoose, busy }: { onChoose: () => void; busy: boolean
       <div className="welcome-content">
         <div className="welcome-emblem"><Icon name="terminal" /><span className="emblem-signal" /></div>
         <p className="eyebrow">A CLEAR VIEW OF WHAT'S RUNNING</p>
-        <h1>Your projects,<br /><em>under control.</em></h1>
-        <p className="welcome-copy">Choose a project folder to see its configured services, follow their output, and start or stop them from one quiet place.</p>
+        <h1>Your project,<br /><em>under control.</em></h1>
+        <p className="welcome-copy">Choose a project folder to see its status, follow its output, and start or stop it from one quiet place.</p>
         <button className="primary-button welcome-button" onClick={onChoose} disabled={busy}>
           <Icon name="folder-plus" /> {busy ? 'Opening folder…' : 'Choose project folder'} <Icon className="button-arrow" name="arrow" />
         </button>
@@ -378,14 +377,12 @@ function SetupScreen({
         <div className="setup-icon"><Icon name="folder-plus" /></div>
         <p className="eyebrow">FIRST RUN</p>
         <h1>Give this workspace<br />a starting point.</h1>
-        <p>There’s no <code>nala.yml</code> here yet. Add one project to create the config. You can add more projects to the same file later.</p>
+        <p>There’s no <code>nala.yml</code> here yet. Configure how to run this folder as a project named <strong>{folderName(folder)}</strong>.</p>
         <div className="setup-location"><Icon name="folder" /><span>{folder}</span></div>
       </div>
 
       <form className="setup-card" onSubmit={onSubmit}>
-        <div className="setup-card-head"><div><span className="eyebrow">NEW CONFIGURATION</span><h2>First project</h2></div><span className="config-file-badge">nala.yml</span></div>
-        <label className="field-label" htmlFor="project-name">Project name</label>
-        <input id="project-name" className="text-field" value={form.name} onChange={(event) => update('name', event.target.value)} placeholder="backend" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" required autoComplete="off" />
+        <div className="setup-card-head"><div><span className="eyebrow">NEW CONFIGURATION</span><h2>Project setup</h2></div><span className="config-file-badge">nala.yml</span></div>
         <label className="field-label" htmlFor="project-cwd">Working directory</label>
         <input id="project-cwd" className="text-field mono-field" value={form.cwd} onChange={(event) => update('cwd', event.target.value)} placeholder="." required autoComplete="off" />
         <p className="field-help">Relative to the folder you chose, or an absolute path.</p>
@@ -394,7 +391,7 @@ function SetupScreen({
         <label className="field-label" htmlFor="project-port">Port <span>OPTIONAL</span></label>
         <input id="project-port" className="text-field mono-field" value={form.port} onChange={(event) => update('port', event.target.value)} placeholder="Auto-detect from command" type="number" min="1" max="65535" />
         <p className="field-help">A clear port flag or common dev-server default is detected when this is blank.</p>
-        <div className="config-preview"><span>CREATES</span><code>projects.{form.name || 'project'}.cwd · run · port</code></div>
+        <div className="config-preview"><span>CREATES</span><code>{folderName(folder)} · nala.yml · cwd · run · port</code></div>
         <button className="primary-button setup-submit" type="submit" disabled={busy}>{busy ? 'Creating config…' : 'Create nala.yml'}<Icon name="arrow" /></button>
       </form>
     </section>

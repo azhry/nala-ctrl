@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -18,10 +17,6 @@ import (
 const configFilename = "nala.yml"
 
 type projectFile struct {
-	Projects map[string]ProjectConfig `yaml:"projects"`
-}
-
-type ProjectConfig struct {
 	CWD  string `yaml:"cwd"`
 	Run  string `yaml:"run"`
 	Port *int   `yaml:"port,omitempty"`
@@ -29,7 +24,6 @@ type ProjectConfig struct {
 }
 
 type CreateProjectInput struct {
-	Name string `json:"name"`
 	CWD  string `json:"cwd"`
 	Run  string `json:"run"`
 	Port string `json:"port"`
@@ -54,7 +48,6 @@ type projectSpec struct {
 	WorkingDir string
 }
 
-var projectNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 var explicitPortPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(?:--port|-port)\s*(?:=\s*|\s+)(\d{1,5})\b`),
 	regexp.MustCompile(`(?i)(?:^|\s)-p\s*(?:=\s*|\s+)?(\d{1,5})\b`),
@@ -63,80 +56,76 @@ var explicitPortPatterns = []*regexp.Regexp{
 var listenerAddressPattern = regexp.MustCompile(`(?i)(?:^|\s)--addr(?:=|\s+)(?:"([^"]+)"|'([^']+)'|([^\s]+))`)
 
 func decodeProjectFile(data []byte) (projectFile, error) {
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return projectFile{}, fmt.Errorf("read %s: %w", configFilename, err)
+	}
+	if len(document.Content) > 0 && document.Content[0].Kind == yaml.MappingNode {
+		root := document.Content[0]
+		for index := 0; index+1 < len(root.Content); index += 2 {
+			if root.Content[index].Value == "projects" {
+				return projectFile{}, errors.New("nala.yml must configure one project using top-level cwd and run fields; remove the projects map")
+			}
+		}
+	}
+
 	var file projectFile
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&file); err != nil {
 		return projectFile{}, fmt.Errorf("read %s: %w", configFilename, err)
 	}
-	if file.Projects == nil {
-		return projectFile{}, errors.New("nala.yml must contain a projects map")
+	if strings.TrimSpace(file.CWD) == "" {
+		return projectFile{}, errors.New("nala.yml is missing cwd")
 	}
-	if len(file.Projects) == 0 {
-		return projectFile{}, errors.New("nala.yml must contain at least one project")
+	if strings.TrimSpace(file.Run) == "" {
+		return projectFile{}, errors.New("nala.yml is missing run")
 	}
-	for name, config := range file.Projects {
-		if !projectNamePattern.MatchString(name) {
-			return projectFile{}, fmt.Errorf("project name %q must start with a letter or number and use only letters, numbers, underscores, or hyphens", name)
-		}
-		if strings.TrimSpace(config.CWD) == "" {
-			return projectFile{}, fmt.Errorf("project %q is missing cwd", name)
-		}
-		if strings.TrimSpace(config.Run) == "" {
-			return projectFile{}, fmt.Errorf("project %q is missing run", name)
-		}
-		if config.Port != nil && (*config.Port < 1 || *config.Port > 65535) {
-			return projectFile{}, fmt.Errorf("project %q port must be between 1 and 65535", name)
-		}
+	if file.Port != nil && (*file.Port < 1 || *file.Port > 65535) {
+		return projectFile{}, errors.New("nala.yml port must be between 1 and 65535")
 	}
 	return file, nil
 }
 
-func projectsForFolder(folder string, file projectFile) ([]projectSpec, error) {
-	names := make([]string, 0, len(file.Projects))
-	for name := range file.Projects {
-		names = append(names, name)
+func projectForFolder(folder string, config projectFile) (projectSpec, error) {
+	folder = filepath.Clean(folder)
+	name := filepath.Base(folder)
+	if name == "." || name == string(filepath.Separator) || strings.TrimSpace(name) == "" {
+		return projectSpec{}, errors.New("project folder must have a name")
 	}
-	sort.Strings(names)
 
-	projects := make([]projectSpec, 0, len(names))
-	for _, name := range names {
-		config := file.Projects[name]
-		workingDir := config.CWD
-		if !filepath.IsAbs(workingDir) {
-			workingDir = filepath.Join(folder, workingDir)
-		}
-		workingDir, err := filepath.Abs(workingDir)
-		if err != nil {
-			return nil, fmt.Errorf("resolve cwd for %s: %w", name, err)
-		}
-
-		port := config.Port
-		if port == nil {
-			port = inferPort(config.Run)
-		}
-		logPath := config.Log
-		if strings.TrimSpace(logPath) == "" {
-			logPath = filepath.Join("logs", name+".log")
-		}
-		if !filepath.IsAbs(logPath) {
-			logPath = filepath.Join(workingDir, logPath)
-		}
-		logPath, err = filepath.Abs(logPath)
-		if err != nil {
-			return nil, fmt.Errorf("resolve log path for %s: %w", name, err)
-		}
-
-		projects = append(projects, projectSpec{
-			Project: Project{
-				Name: name, CWD: workingDir, Run: config.Run, Port: port, LogPath: logPath,
-			},
-			WorkingDir: workingDir,
-		})
+	workingDir := config.CWD
+	if !filepath.IsAbs(workingDir) {
+		workingDir = filepath.Join(folder, workingDir)
 	}
-	return projects, nil
+	workingDir, err := filepath.Abs(workingDir)
+	if err != nil {
+		return projectSpec{}, fmt.Errorf("resolve cwd for %s: %w", name, err)
+	}
+
+	port := config.Port
+	if port == nil {
+		port = inferPort(config.Run)
+	}
+	logPath := config.Log
+	if strings.TrimSpace(logPath) == "" {
+		logPath = filepath.Join("logs", name+".log")
+	}
+	if !filepath.IsAbs(logPath) {
+		logPath = filepath.Join(workingDir, logPath)
+	}
+	logPath, err = filepath.Abs(logPath)
+	if err != nil {
+		return projectSpec{}, fmt.Errorf("resolve log path for %s: %w", name, err)
+	}
+
+	return projectSpec{
+		Project: Project{
+			Name: name, CWD: workingDir, Run: config.Run, Port: port, LogPath: logPath,
+		},
+		WorkingDir: workingDir,
+	}, nil
 }
-
 func inferPort(command string) *int {
 	for _, pattern := range explicitPortPatterns {
 		match := pattern.FindStringSubmatch(command)
@@ -189,12 +178,8 @@ func validPort(value string) *int {
 }
 
 func createProjectFile(folder string, input CreateProjectInput) error {
-	name := strings.TrimSpace(input.Name)
 	cwd := strings.TrimSpace(input.CWD)
 	run := strings.TrimSpace(input.Run)
-	if !projectNamePattern.MatchString(name) {
-		return errors.New("project name must start with a letter or number and use only letters, numbers, underscores, or hyphens")
-	}
 	if cwd == "" {
 		return errors.New("working directory is required")
 	}
@@ -215,9 +200,7 @@ func createProjectFile(folder string, input CreateProjectInput) error {
 	if !filepath.IsAbs(cwd) {
 		cwd = filepath.Clean(cwd)
 	}
-	file := projectFile{Projects: map[string]ProjectConfig{
-		name: {CWD: cwd, Run: run, Port: port},
-	}}
+	file := projectFile{CWD: cwd, Run: run, Port: port}
 	data, err := yaml.Marshal(file)
 	if err != nil {
 		return fmt.Errorf("encode %s: %w", configFilename, err)

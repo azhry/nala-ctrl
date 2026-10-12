@@ -1,27 +1,23 @@
 # Nala Ctrl
 
-Nala Ctrl is a desktop app for running and monitoring the projects declared in a selected `nala.yml`. It starts each configured run command, captures its output, and shows the latest log lines. When a configured port is already in use, the app shows the owning process and asks before stopping it.
+Nala Ctrl is a desktop app for running and monitoring a configured project and its logs. It starts the configured run command, captures output, and shows recent log lines. When the configured port is already in use, the app identifies its owner and asks before stopping it.
 
 ## Project configuration
 
-Choose a folder that contains `nala.yml`. If the file is missing, Nala Ctrl can create one project entry for you. A configuration can contain multiple projects:
+Choose a project folder that contains `nala.yml`. One `nala.yml` file defines exactly one project, named from the selected folder basename. If the file is missing, Nala Ctrl can create a config with `cwd` and `run`; `port` is optional and can be inferred from the run command.
 
 ```yaml
-projects:
-  backend:
-    cwd: ./backend
-    run: go run .
-    port: 8080
-  frontend:
-    cwd: ./frontend
-    run: npm run dev -- --port 5173
+cwd: .
+run: go run .
+port: 8080
+log: logs/application.log
 ```
 
-- `cwd` and `run` are required. Relative working directories are resolved from the selected folder.
-- `port` is optional. Nala Ctrl detects common explicit port flags, Go `--addr host:port` listener addresses, and known defaults for Vite, Next.js, Python's HTTP server, and webpack. Set it explicitly when your command uses a different port. Without a detected port, the app can still run and capture logs, but cannot check for a port conflict first.
-- `log` is optional and sets the log file path. By default, process output is appended to `logs/<project>.log` under that project's working directory.
+- cwd and run are required. Relative working directories resolve from the selected folder.
+- port is optional. Nala Ctrl detects common explicit port flags, Go --addr host:port listener addresses, and known defaults for Vite, Next.js, Python's HTTP server, and webpack. Set it explicitly when your command uses a different port. Without a detected port, the app can still run and capture logs, but cannot check for a port conflict first.
+- log is optional and sets the log file path. By default, process output is appended to logs/<folder-name>.log under cwd.
 
-Only entries in the selected `nala.yml` appear in the app. The Run and Stop controls manage the command started by Nala Ctrl. Closing the app stops processes it started.
+Only the one project in the selected folder's `nala.yml` appears in the app. Choose another folder to switch projects. The Run and Stop controls manage the command started by Nala Ctrl. Closing the app stops processes it started.
 
 ## Development
 

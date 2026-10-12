@@ -151,14 +151,11 @@ func (m *Manager) LoadFolder(folder string) (*WorkspaceState, error) {
 		if err != nil {
 			return nil, err
 		}
-		specs, err := projectsForFolder(folder, file)
+		spec, err := projectForFolder(folder, file)
 		if err != nil {
 			return nil, err
 		}
-		projects = make(map[string]projectSpec, len(specs))
-		for _, spec := range specs {
-			projects[spec.Name] = spec
-		}
+		projects = map[string]projectSpec{spec.Name: spec}
 	}
 
 	m.mu.Lock()

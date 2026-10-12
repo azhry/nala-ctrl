@@ -1,10 +1,10 @@
 # Nala Ctrl
 
-Nala Ctrl is a local desktop app for running and monitoring projects declared in a selected `nala.yml`. It uses Wails v2 with a Go process manager and a React, TypeScript, and Vite frontend.
+Nala Ctrl is a local desktop app for running and monitoring the project declared in the selected `nala.yml`. It uses Wails v2 with a Go process manager and a React, TypeScript, and Vite frontend.
 
 ## Scope
 
-- Manage only entries in the currently selected `nala.yml`; do not discover or manage arbitrary machine processes.
+- Manage the single project configured in the currently selected folder's `nala.yml`; do not discover or manage arbitrary machine processes.
 - A project needs `cwd` and `run`. `port` is optional, and common command flags or development-server defaults are detected when possible. `log` optionally selects the output file.
 - Show recent process output and stream new lines to the UI through Wails events.
 - Starting a project checks its configured or detected port. If another process owns it, show the identity and require confirmation before rechecking and terminating that exact process.

@@ -11,7 +11,7 @@ Use this skill to produce reviewable evidence without overstating what automated
 
 1. Read the task or pull-request manual steps, `AGENTS.md`, and the relevant `.agents/knowledge/` files before choosing commands or assumptions.
 2. Verify the repository root and use the documented Go, npm, and Wails commands. Resolve project fixture paths, ports, and log locations from the selected `nala.yml` and project knowledge.
-3. Test only configured projects. Do not inspect or manage arbitrary host processes. Make each numbered command independently pasteable and capture its immediate status. Keep setup, assertions, and cleanup separate; do not create or hand off a helper script or bulk runner.
+3. Test only the project configured by the selected `nala.yml`. Do not inspect or manage arbitrary host processes. Make each numbered command independently pasteable and capture its immediate status. Keep setup, assertions, and cleanup separate; do not create or hand off a helper script or bulk runner.
 4. For native UI verification, state the action and visible result. Browser-only observation does not prove interaction in the Wails desktop window.
 5. Compare observed status and output with the stated expected result. Classify each command as pass, expected result, or fail; preserve unexpected nonzero statuses.
 6. Report exact commands, immediate statuses, relevant output, expected outcomes, fixture identity, and any unverified native UI actions.

@@ -3,33 +3,38 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 )
 
+func projectTestFolder(t *testing.T, name string) string {
+	t.Helper()
+	folder := filepath.Join(t.TempDir(), name)
+	if err := os.Mkdir(folder, 0755); err != nil {
+		t.Fatal(err)
+	}
+	return folder
+}
+
 func TestDecodeProjectFileAndResolveDefaults(t *testing.T) {
-	folder := t.TempDir()
-	data := []byte("projects:\n  frontend:\n    cwd: ./web\n    run: npm run dev -- --port 5174\n  backend:\n    cwd: ./api\n    run: go run . --port=8081\n")
-	file, err := decodeProjectFile(data)
+	folder := projectTestFolder(t, "backend")
+	data := []byte("cwd: ./api\nrun: go run . --port=8081\n")
+	config, err := decodeProjectFile(data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	projects, err := projectsForFolder(folder, file)
+	project, err := projectForFolder(folder, config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := []string{projects[0].Name, projects[1].Name}, []string{"backend", "frontend"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("project order = %v, want %v", got, want)
+	if project.Name != "backend" {
+		t.Fatalf("project name = %q, want backend", project.Name)
 	}
-	if got, want := *projects[0].Port, 8081; got != want {
-		t.Fatalf("backend port = %d, want %d", got, want)
+	if project.Port == nil || *project.Port != 8081 {
+		t.Fatalf("project port = %v, want 8081", project.Port)
 	}
-	if got, want := *projects[1].Port, 5174; got != want {
-		t.Fatalf("frontend port = %d, want %d", got, want)
-	}
-	if got, want := projects[0].LogPath, filepath.Join(folder, "api", "logs", "backend.log"); got != want {
-		t.Fatalf("backend log path = %q, want %q", got, want)
+	if got, want := project.LogPath, filepath.Join(folder, "api", "logs", "backend.log"); got != want {
+		t.Fatalf("project log path = %q, want %q", got, want)
 	}
 }
 
@@ -45,7 +50,7 @@ func TestInferPort(t *testing.T) {
 		{name: "environment", command: "PORT=8083 go run .", want: 8083},
 		{name: "listener address", command: "go run server.go --addr 127.0.0.1:8080", want: 8080},
 		{name: "listener address equals", command: "go run server.go --addr=:8084", want: 8084},
-		{name: "quoted listener address", command: `go run server.go --addr "localhost:8085"`, want: 8085},
+		{name: "quoted listener address", command: "go run server.go --addr \"localhost:8085\"", want: 8085},
 		{name: "vite default", command: "vite --host 0.0.0.0", want: 5173},
 		{name: "next default", command: "npx next dev", want: 3000},
 		{name: "python default", command: "python -m http.server", want: 8000},
@@ -73,12 +78,12 @@ func TestDecodeProjectFileRejectsInvalidEntries(t *testing.T) {
 		name string
 		data string
 	}{
-		{name: "missing projects", data: "cwd: .\nrun: go run .\n"},
-		{name: "missing cwd", data: "projects:\n  backend:\n    run: go run .\n"},
-		{name: "missing run", data: "projects:\n  backend:\n    cwd: .\n"},
-		{name: "invalid port", data: "projects:\n  backend:\n    cwd: .\n    run: go run .\n    port: 65536\n"},
-		{name: "invalid project name", data: "projects:\n  ../backend:\n    cwd: .\n    run: go run .\n"},
-		{name: "unknown field", data: "projects:\n  backend:\n    cwd: .\n    run: go run .\n    watch: true\n"},
+		{name: "empty config", data: ""},
+		{name: "missing cwd", data: "run: go run .\n"},
+		{name: "missing run", data: "cwd: .\n"},
+		{name: "invalid port", data: "cwd: .\nrun: go run .\nport: 65536\n"},
+		{name: "projects map unsupported", data: "projects:\n  backend:\n    cwd: .\n    run: go run .\n"},
+		{name: "unknown field", data: "cwd: .\nrun: go run .\nwatch: true\n"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -90,7 +95,7 @@ func TestDecodeProjectFileRejectsInvalidEntries(t *testing.T) {
 }
 
 func TestCreateConfigWritesOneProjectWithoutOverwriting(t *testing.T) {
-	folder := t.TempDir()
+	folder := projectTestFolder(t, "backend")
 	manager := NewManager()
 	state, err := manager.LoadFolder(folder)
 	if err != nil {
@@ -99,31 +104,30 @@ func TestCreateConfigWritesOneProjectWithoutOverwriting(t *testing.T) {
 	if !state.NeedsConfig {
 		t.Fatal("missing config should enter first-run setup")
 	}
-	state, err = manager.CreateConfig(CreateProjectInput{Name: "backend", CWD: ".", Run: "go run . --port 8090"})
+	state, err = manager.CreateConfig(CreateProjectInput{CWD: ".", Run: "go run . --port 8090"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.NeedsConfig || len(state.Projects) != 1 || state.Projects[0].Port == nil || *state.Projects[0].Port != 8090 {
+	if state.NeedsConfig || len(state.Projects) != 1 || state.Projects[0].Name != "backend" || state.Projects[0].Port == nil || *state.Projects[0].Port != 8090 {
 		t.Fatalf("created workspace state = %#v", state)
 	}
 	data, err := os.ReadFile(filepath.Join(folder, configFilename))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "cwd: .") || !strings.Contains(string(data), "run: go run . --port 8090") || !strings.Contains(string(data), "port: 8090") {
-		t.Fatalf("created config does not contain the expected project fields: %s", data)
+	if !strings.Contains(string(data), "cwd: .") || !strings.Contains(string(data), "run: go run . --port 8090") || !strings.Contains(string(data), "port: 8090") || strings.Contains(string(data), "projects:") {
+		t.Fatalf("created config does not contain the expected top-level fields: %s", data)
 	}
-	if err := createProjectFile(folder, CreateProjectInput{Name: "frontend", CWD: ".", Run: "npm run dev"}); err == nil {
+	if err := createProjectFile(folder, CreateProjectInput{CWD: ".", Run: "npm run dev"}); err == nil {
 		t.Fatal("expected existing nala.yml to be preserved")
 	}
 }
 
 func TestCreateConfigInfersPortFromListenerAddress(t *testing.T) {
-	folder := t.TempDir()
+	folder := projectTestFolder(t, "setup")
 	if err := createProjectFile(folder, CreateProjectInput{
-		Name: "setup",
-		CWD:  ".",
-		Run:  "go run server.go --name setup --addr 127.0.0.1:8080",
+		CWD: ".",
+		Run: "go run server.go --name setup --addr 127.0.0.1:8080",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -131,11 +135,11 @@ func TestCreateConfigInfersPortFromListenerAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	file, err := decodeProjectFile(data)
+	config, err := decodeProjectFile(data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := file.Projects["setup"].Port; got == nil || *got != 8080 {
+	if got := config.Port; got == nil || *got != 8080 {
 		t.Fatalf("created config port = %v, want 8080", got)
 	}
 }

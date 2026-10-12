@@ -4,11 +4,11 @@ Nala Ctrl is a local desktop process manager. The Go application and process man
 
 ## Workspace and configuration
 
-- The user chooses one project folder with the native folder dialog. Nala Ctrl reads only that folder's `nala.yml`.
-- Configuration has a `projects` map. Each entry requires `cwd` and `run`; `port` and `log` are optional. Relative working directories resolve from the selected folder. Relative log paths resolve from the project's working directory.
-- If `nala.yml` is absent, the UI gathers one initial project entry and creates the file without overwriting an existing file.
-- Project names are limited to letters, numbers, underscores, and hyphens; unknown YAML fields and invalid port values are rejected.
-- Only configured projects appear in the UI. There is no system-wide process discovery feature.
+- The user chooses one project folder with the native folder dialog. Nala Ctrl reads only that folder's nala.yml; each file defines exactly one project.
+- Configuration uses top-level cwd and run; port and log are optional. Relative working directories resolve from the selected folder. Relative log paths resolve from the working directory.
+- If nala.yml is absent, the UI gathers cwd, run, and optional port, derives the project name from the folder basename, and creates the file without overwriting an existing file.
+- Unknown YAML fields and invalid port values are rejected. A legacy projects map is rejected with guidance to use top-level fields.
+- Only the one project in the selected folder appears in the UI. There is no system-wide process discovery feature.
 
 ## Process lifecycle and port safety
 
@@ -28,7 +28,7 @@ Nala Ctrl is a local desktop process manager. The Go application and process man
 
 | Path | Responsibility |
 | --- | --- |
-| `config.go` | YAML schema, validation, path resolution, port inference from common flags, `--addr host:port`, and known defaults, plus first config creation. |
+| `config.go` | Single-project YAML schema, validation, path resolution, port inference from common flags, `--addr host:port`, and known defaults, plus first config creation. |
 | `manager.go` | Project selection, process lifecycle, exact-owner confirmation, and log tail reads. |
 | `ports.go`, `process_windows.go`, `process_unix.go` | Listening socket ownership and platform process control. |
 | `log_writer.go` | Append output and emit line/state event types. |
