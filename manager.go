@@ -22,7 +22,8 @@ type Manager struct {
 	mu           sync.RWMutex
 	folder       string
 	needsConfig  bool
-	projects     map[string]projectSpec
+	projects     map[string]Project
+	services     map[string]projectSpec
 	running      map[string]*managedProcess
 	starting     map[string]bool
 	logHandler   func(ProjectLogEvent)
@@ -41,6 +42,7 @@ type ProcessIdentity struct {
 	CreateTime      int64  `json:"createTime"`
 	CanTerminate    bool   `json:"canTerminate"`
 	ManagedProject  string `json:"managedProject"`
+	ManagedService  string `json:"managedService"`
 	TerminationNote string `json:"terminationNote"`
 }
 
@@ -51,17 +53,25 @@ type RunResult struct {
 }
 
 type ProjectDetails struct {
-	Project
-	Running   bool             `json:"running"`
-	PID       int32            `json:"pid"`
-	PortOwner *ProcessIdentity `json:"portOwner"`
-	LogLines  []string         `json:"logLines"`
-	LogSize   int64            `json:"logSize"`
+	ProjectID   string           `json:"projectId"`
+	ProjectName string           `json:"projectName"`
+	ServiceID   string           `json:"serviceId"`
+	ServiceName string           `json:"serviceName"`
+	CWD         string           `json:"cwd"`
+	Run         string           `json:"run"`
+	Port        *int             `json:"port"`
+	LogPath     string           `json:"logPath"`
+	Running     bool             `json:"running"`
+	PID         int32            `json:"pid"`
+	PortOwner   *ProcessIdentity `json:"portOwner"`
+	LogLines    []string         `json:"logLines"`
+	LogSize     int64            `json:"logSize"`
 }
 
 func NewManager() *Manager {
 	return &Manager{
-		projects: make(map[string]projectSpec),
+		projects: make(map[string]Project),
+		services: make(map[string]projectSpec),
 		running:  make(map[string]*managedProcess),
 		starting: make(map[string]bool),
 	}
@@ -113,14 +123,14 @@ func (m *Manager) workspaceLocked() *WorkspaceState {
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool {
-		left, right := m.projects[ids[i]].Project, m.projects[ids[j]].Project
+		left, right := m.projects[ids[i]], m.projects[ids[j]]
 		if left.Name != right.Name {
 			return strings.ToLower(left.Name) < strings.ToLower(right.Name)
 		}
 		return strings.ToLower(left.Folder) < strings.ToLower(right.Folder)
 	})
 	for _, id := range ids {
-		state.Projects = append(state.Projects, m.projects[id].Project)
+		state.Projects = append(state.Projects, m.projects[id])
 	}
 	return state
 }
@@ -144,7 +154,8 @@ func (m *Manager) LoadFolder(folder string) (*WorkspaceState, error) {
 
 	configPath := filepath.Join(folder, configFilename)
 	data, readErr := os.ReadFile(configPath)
-	var spec projectSpec
+	var project Project
+	var specs map[string]projectSpec
 	needsConfig := false
 	if readErr != nil {
 		if !errors.Is(readErr, os.ErrNotExist) {
@@ -156,7 +167,7 @@ func (m *Manager) LoadFolder(folder string) (*WorkspaceState, error) {
 		if err != nil {
 			return nil, err
 		}
-		spec, err = projectForFolder(folder, file)
+		project, specs, err = projectForFolder(folder, file)
 		if err != nil {
 			return nil, err
 		}
@@ -169,8 +180,11 @@ func (m *Manager) LoadFolder(folder string) (*WorkspaceState, error) {
 	if !needsConfig {
 		// Loading a folder adds it to this app session. Re-adding a folder
 		// selects its existing project without replacing its process or log state.
-		if _, exists := m.projects[spec.ID]; !exists {
-			m.projects[spec.ID] = spec
+		if _, exists := m.projects[project.ID]; !exists {
+			m.projects[project.ID] = project
+			for serviceID, spec := range specs {
+				m.services[serviceID] = spec
+			}
 		}
 	}
 	return m.workspaceLocked(), nil
@@ -190,13 +204,13 @@ func (m *Manager) CreateConfig(input CreateProjectInput) (*WorkspaceState, error
 	return m.LoadFolder(folder)
 }
 
-func (m *Manager) resolveProjectLocked(idOrName string) (string, projectSpec, bool) {
-	if spec, exists := m.projects[idOrName]; exists {
+func (m *Manager) resolveServiceLocked(idOrName string) (string, projectSpec, bool) {
+	if spec, exists := m.services[idOrName]; exists {
 		return idOrName, spec, true
 	}
 	var matchID string
 	var match projectSpec
-	for id, spec := range m.projects {
+	for id, spec := range m.services {
 		if spec.Name != idOrName {
 			continue
 		}
@@ -210,15 +224,17 @@ func (m *Manager) resolveProjectLocked(idOrName string) (string, projectSpec, bo
 
 func (m *Manager) GetProjectDetails(idOrName string) (*ProjectDetails, error) {
 	m.mu.RLock()
-	id, spec, exists := m.resolveProjectLocked(idOrName)
+	id, spec, exists := m.resolveServiceLocked(idOrName)
 	managed := m.running[id]
 	m.mu.RUnlock()
 	if !exists {
-		return nil, fmt.Errorf("project %q is not loaded; choose its folder first or use its folder path when names repeat", idOrName)
+		return nil, fmt.Errorf("service %q is not loaded; choose its folder first or use its service ID when names repeat", idOrName)
 	}
 
 	details := &ProjectDetails{
-		Project:  spec.Project,
+		ProjectID: spec.ProjectID, ProjectName: spec.ProjectName,
+		ServiceID: spec.ID, ServiceName: spec.Name,
+		CWD: spec.CWD, Run: spec.Run, Port: spec.Port, LogPath: spec.LogPath,
 		LogLines: []string{},
 	}
 	if managed != nil {
@@ -235,22 +251,13 @@ func (m *Manager) GetProjectDetails(idOrName string) (*ProjectDetails, error) {
 			return nil, fmt.Errorf("inspect port %d: %w", *details.Port, err)
 		}
 		if owner != nil {
-			m.mu.RLock()
-			for projectID, process := range m.running {
-				if process.pid == owner.PID {
-					if managedSpec, ok := m.projects[projectID]; ok {
-						owner.ManagedProject = managedSpec.Name
-					}
-					break
-				}
-			}
-			m.mu.RUnlock()
+			m.markManagedOwner(owner)
 			details.PortOwner = owner
 		}
 	}
 	lines, size, err := readLogTail(spec.LogPath)
 	if err != nil {
-		return nil, fmt.Errorf("read project log: %w", err)
+		return nil, fmt.Errorf("read service log: %w", err)
 	}
 	details.LogLines = lines
 	details.LogSize = size
@@ -260,20 +267,20 @@ func (m *Manager) GetProjectDetails(idOrName string) (*ProjectDetails, error) {
 func (m *Manager) beginStart(idOrName string) (string, projectSpec, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	id, spec, exists := m.resolveProjectLocked(idOrName)
+	id, spec, exists := m.resolveServiceLocked(idOrName)
 	if !exists {
-		return "", projectSpec{}, fmt.Errorf("project %q is not loaded; choose its folder first or use its folder path when names repeat", idOrName)
+		return "", projectSpec{}, fmt.Errorf("service %q is not loaded; choose its folder first or use its service ID when names repeat", idOrName)
 	}
 	if process := m.running[id]; process != nil {
 		select {
 		case <-process.done:
 			delete(m.running, id)
 		default:
-			return "", projectSpec{}, fmt.Errorf("project %q is already running", spec.Name)
+			return "", projectSpec{}, fmt.Errorf("service %q is already running", spec.Name)
 		}
 	}
 	if m.starting[id] {
-		return "", projectSpec{}, fmt.Errorf("project %q is already starting", spec.Name)
+		return "", projectSpec{}, fmt.Errorf("service %q is already starting", spec.Name)
 	}
 	m.starting[id] = true
 	return id, spec, nil
@@ -311,7 +318,7 @@ func (m *Manager) TerminatePortOwnerAndRun(idOrName string, pid int32, createTim
 	}
 	defer m.finishStart(id)
 	if spec.Port == nil {
-		return RunResult{}, errors.New("this project has no configured or detected port")
+		return RunResult{}, errors.New("this service has no configured or detected port")
 	}
 	owner, err := findPortOwner(*spec.Port)
 	if err != nil {
@@ -338,23 +345,24 @@ func (m *Manager) TerminatePortOwnerAndRun(idOrName string, pid int32, createTim
 func (m *Manager) markManagedOwner(owner *ProcessIdentity) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	for projectID, process := range m.running {
+	for serviceID, process := range m.running {
 		if process.pid == owner.PID {
-			if spec, ok := m.projects[projectID]; ok {
-				owner.ManagedProject = spec.Name
+			if spec, ok := m.services[serviceID]; ok {
+				owner.ManagedProject = spec.ProjectName
+				owner.ManagedService = spec.Name
 			}
 			return
 		}
 	}
 }
 
-func (m *Manager) startProject(projectID string, spec projectSpec) (RunResult, error) {
+func (m *Manager) startProject(serviceID string, spec projectSpec) (RunResult, error) {
 	info, err := os.Stat(spec.WorkingDir)
 	if err != nil {
-		return RunResult{}, fmt.Errorf("project folder %q: %w", spec.WorkingDir, err)
+		return RunResult{}, fmt.Errorf("service working directory %q: %w", spec.WorkingDir, err)
 	}
 	if !info.IsDir() {
-		return RunResult{}, fmt.Errorf("project cwd %q is not a folder", spec.WorkingDir)
+		return RunResult{}, fmt.Errorf("service cwd %q is not a folder", spec.WorkingDir)
 	}
 	if err := os.MkdirAll(filepath.Dir(spec.LogPath), 0755); err != nil {
 		return RunResult{}, fmt.Errorf("create log folder: %w", err)
@@ -363,7 +371,7 @@ func (m *Manager) startProject(projectID string, spec projectSpec) (RunResult, e
 	if err != nil {
 		return RunResult{}, fmt.Errorf("open log file: %w", err)
 	}
-	logOutput, err := newProcessLogWriter(logFile, projectID, spec.Name, m.publishLog)
+	logOutput, err := newProcessLogWriter(logFile, spec.ProjectID, spec.ProjectName, spec.ID, spec.Name, m.publishLog)
 	if err != nil {
 		_ = logFile.Close()
 		return RunResult{}, fmt.Errorf("inspect project log: %w", err)
@@ -378,30 +386,30 @@ func (m *Manager) startProject(projectID string, spec projectSpec) (RunResult, e
 	}
 	if err := command.Start(); err != nil {
 		_ = logOutput.Close()
-		return RunResult{}, fmt.Errorf("start project: %w", err)
+		return RunResult{}, fmt.Errorf("start service: %w", err)
 	}
 	process := &managedProcess{command: command, pid: int32(command.Process.Pid), done: make(chan struct{})}
 	m.mu.Lock()
-	m.running[projectID] = process
+	m.running[serviceID] = process
 	m.mu.Unlock()
-	m.publishState(ProjectStateEvent{ProjectID: projectID, Project: spec.Name, Running: true, PID: process.pid})
+	m.publishState(ProjectStateEvent{ProjectID: spec.ProjectID, ProjectName: spec.ProjectName, ServiceID: spec.ID, ServiceName: spec.Name, Running: true, PID: process.pid})
 	go func() {
 		_ = command.Wait()
 		_ = logOutput.Close()
 		m.mu.Lock()
-		if m.running[projectID] == process {
-			delete(m.running, projectID)
+		if m.running[serviceID] == process {
+			delete(m.running, serviceID)
 		}
 		m.mu.Unlock()
 		close(process.done)
-		m.publishState(ProjectStateEvent{ProjectID: projectID, Project: spec.Name})
+		m.publishState(ProjectStateEvent{ProjectID: spec.ProjectID, ProjectName: spec.ProjectName, ServiceID: spec.ID, ServiceName: spec.Name})
 	}()
 	return RunResult{Started: true, PID: process.pid}, nil
 }
 
 func (m *Manager) StopProject(idOrName string) error {
 	m.mu.RLock()
-	id, _, exists := m.resolveProjectLocked(idOrName)
+	id, _, exists := m.resolveServiceLocked(idOrName)
 	var process *managedProcess
 	if exists {
 		process = m.running[id]
@@ -420,14 +428,14 @@ func (m *Manager) StopProject(idOrName string) error {
 		case <-process.done:
 			return nil
 		default:
-			return fmt.Errorf("stop project process %d: %w", process.pid, err)
+			return fmt.Errorf("stop service process %d: %w", process.pid, err)
 		}
 	}
 	select {
 	case <-process.done:
 		return nil
 	case <-time.After(6 * time.Second):
-		return fmt.Errorf("project process %d did not stop", process.pid)
+		return fmt.Errorf("service process %d did not stop", process.pid)
 	}
 }
 

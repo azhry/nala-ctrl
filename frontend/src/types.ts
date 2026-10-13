@@ -1,11 +1,17 @@
-export interface Project {
+export interface Service {
   id: string;
   name: string;
-  folder: string;
   cwd: string;
   run: string;
   port?: number | null;
   logPath: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  folder: string;
+  services: Service[];
 }
 
 export interface WorkspaceState {
@@ -26,6 +32,7 @@ export interface ProcessIdentity {
   createTime: number;
   canTerminate: boolean;
   managedProject: string;
+  managedService: string;
   terminationNote: string;
 }
 
@@ -35,7 +42,15 @@ export interface RunResult {
   portOwner?: ProcessIdentity | null;
 }
 
-export interface ProjectDetails extends Project {
+export interface ProjectDetails {
+  projectId: string;
+  projectName: string;
+  serviceId: string;
+  serviceName: string;
+  cwd: string;
+  run: string;
+  port?: number | null;
+  logPath: string;
   running: boolean;
   pid: number;
   portOwner?: ProcessIdentity | null;
@@ -45,14 +60,18 @@ export interface ProjectDetails extends Project {
 
 export interface ProjectLogEvent {
   projectId: string;
-  project: string;
+  projectName: string;
+  serviceId: string;
+  serviceName: string;
   line: string;
   logSize: number;
 }
 
 export interface ProjectStateEvent {
   projectId: string;
-  project: string;
+  projectName: string;
+  serviceId: string;
+  serviceName: string;
   running: boolean;
   pid: number;
 }

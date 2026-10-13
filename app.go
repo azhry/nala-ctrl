@@ -6,8 +6,9 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// ProjectManager is the Wails-bound application service. It manages projects
-// explicitly added from folders containing one nala.yml each.
+// ProjectManager is the Wails-bound application service. It manages project
+// folders explicitly added from the app, with separate services from each
+// folder's nala.yml.
 type ProjectManager struct {
 	ctx     context.Context
 	manager *Manager

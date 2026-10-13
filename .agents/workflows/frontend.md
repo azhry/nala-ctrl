@@ -9,10 +9,10 @@ For UI implementation, follow the delegation requirement in `AGENTS.md`: use a d
 ## Implementation
 
 - Read `.agents/knowledge/architecture.md` and the issue's behavior contract before changing the UI.
-- Preserve the configured-project boundary: each explicitly added folder contributes exactly one project from its nala.yml. List all added projects, identify them by folder path, and let selection change the monitored view without stopping running projects.
+- Preserve the configured-project boundary: each explicitly added folder contributes one project group from its `nala.yml`; its `projects` map may contain multiple services. Show one folder-level project with separately selectable services, each with its own run state and log stream. Let selection change the monitored view without stopping running processes.
 - Use the existing Wails bindings and runtime events; do not invent a remote API or browser-only product flow.
-- Keep native folder addition, one-project-per-file missing-config setup, project selection, Run/Stop, port conflict confirmation, log following, loading, empty, and error states observable. Adding a folder without nala.yml must retain existing projects and their running states.
-- Keep `project:log` and `project:state` subscriptions scoped to the active view using stable project IDs. Unsubscribe on unmount or project change, and avoid displaying stale state after Run, Stop, or a silent process exit.
+- Keep native folder addition, one-project-per-file missing-config setup, service selection, Run/Stop, port conflict confirmation, log following, loading, empty, and error states observable. Adding a folder without `nala.yml` must retain existing projects and their running states.
+- Keep `project:log` and `project:state` subscriptions scoped to the active service using stable service IDs. Unsubscribe on unmount or service change, and avoid displaying stale state after Run, Stop, or a silent process exit.
 - Do not leave a clickable-looking control as a no-op. Implement it, remove it, or disable it with a clear explanation.
 - Use semantic buttons, labels, headings, and status/log roles. Support keyboard activation, visible focus, Escape to dismiss a non-busy dialog, and useful error announcements.
 - Treat project names, paths, commands, log lines, process names, and port-owner details as data; render them safely without HTML injection.

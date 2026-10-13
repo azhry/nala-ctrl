@@ -4,20 +4,27 @@ Nala Ctrl is a desktop app for running and monitoring configured projects and th
 
 ## Project configuration
 
-Add project folders that contain `nala.yml`. Each file defines exactly one project, named from its folder basename. You can add multiple folders and switch between their logs while their processes keep running. If a file is missing, Nala Ctrl can create a config with `cwd` and `run`; `port` is optional and can be inferred from the run command.
+Add project folders that contain `nala.yml`. Each file represents one project, named from its folder basename, and can declare multiple independently managed services. You can add multiple folders and switch between their services while processes keep running. If a file is missing, Nala Ctrl can create a config with an initial service using `cwd` and `run`; `port` is optional and can be inferred from the run command.
 
 ```yaml
-cwd: .
-run: go run .
-port: 8080
-log: logs/application.log
+projects:
+  backend:
+    cwd: backend
+    run: go run . --port 8080
+    port: 8080
+    log: logs/backend.log
+  frontend:
+    cwd: frontend
+    run: npm run dev -- --port 5173
+    port: 5173
+    log: logs/frontend.log
 ```
 
-- cwd and run are required. Relative working directories resolve from the selected folder.
-- port is optional. Nala Ctrl detects common explicit port flags, Go --addr host:port listener addresses, and known defaults for Vite, Next.js, Python's HTTP server, and webpack. Set it explicitly when your command uses a different port. Without a detected port, the app can still run and capture logs, but cannot check for a port conflict first.
-- log is optional and sets the log file path. By default, process output is appended to logs/<folder-name>.log under cwd.
+- Each entry under `projects` is a service and requires `cwd` and `run`. Relative working directories resolve from the selected folder.
+- `port` is optional per service. Nala Ctrl detects common explicit port flags, Go `--addr host:port` listener addresses, and known defaults for Vite, Next.js, Python's HTTP server, and webpack. Set it explicitly when your command uses a different port. Without a detected port, the app can still run and capture logs, but cannot check for a port conflict first.
+- `log` is optional per service and sets its log file path. By default, process output is appended to `logs/<service-name>.log` under that service's `cwd`.
 
-Each folder you add contributes one project to the list. Select any project to monitor its status and logs; switching projects does not stop running commands. Run and Stop manage that project's command. Closing the app stops every process it started.
+Each folder you add contributes one project group to the list. Its services have separate status, Run/Stop controls, and log streams. Switching between projects or services does not stop running commands. Closing the app stops every process it started.
 
 ## Development
 

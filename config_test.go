@@ -17,24 +17,32 @@ func projectTestFolder(t *testing.T, name string) string {
 }
 
 func TestDecodeProjectFileAndResolveDefaults(t *testing.T) {
-	folder := projectTestFolder(t, "backend")
-	data := []byte("cwd: ./api\nrun: go run . --port=8081\n")
+	folder := projectTestFolder(t, "nala-labs")
+	data := []byte("projects:\n  backend:\n    cwd: ./api\n    run: go run . --port=8081\n  frontend:\n    cwd: ./web\n    run: npm run dev -- --port 5173\n")
 	config, err := decodeProjectFile(data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	project, err := projectForFolder(folder, config)
+	project, services, err := projectForFolder(folder, config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if project.Name != "backend" {
-		t.Fatalf("project name = %q, want backend", project.Name)
+	if project.Name != "nala-labs" || len(project.Services) != 2 {
+		t.Fatalf("project group = %#v, want one nala-labs project with two services", project)
 	}
-	if project.Port == nil || *project.Port != 8081 {
-		t.Fatalf("project port = %v, want 8081", project.Port)
+	backend := project.Services[0]
+	if backend.Name != "backend" || backend.Port == nil || *backend.Port != 8081 {
+		t.Fatalf("backend service = %#v, want inferred port 8081", backend)
 	}
-	if got, want := project.LogPath, filepath.Join(folder, "api", "logs", "backend.log"); got != want {
-		t.Fatalf("project log path = %q, want %q", got, want)
+	if got, want := backend.LogPath, filepath.Join(folder, "api", "logs", "backend.log"); got != want {
+		t.Fatalf("backend log path = %q, want %q", got, want)
+	}
+	frontend := project.Services[1]
+	if frontend.Name != "frontend" || frontend.Port == nil || *frontend.Port != 5173 {
+		t.Fatalf("frontend service = %#v, want inferred port 5173", frontend)
+	}
+	if len(services) != 2 || services[backend.ID].ProjectID != project.ID || services[frontend.ID].ProjectID != project.ID {
+		t.Fatalf("resolved service specs = %#v, want two independent services in one group", services)
 	}
 }
 
@@ -79,11 +87,13 @@ func TestDecodeProjectFileRejectsInvalidEntries(t *testing.T) {
 		data string
 	}{
 		{name: "empty config", data: ""},
-		{name: "missing cwd", data: "run: go run .\n"},
-		{name: "missing run", data: "cwd: .\n"},
-		{name: "invalid port", data: "cwd: .\nrun: go run .\nport: 65536\n"},
-		{name: "projects map unsupported", data: "projects:\n  backend:\n    cwd: .\n    run: go run .\n"},
-		{name: "unknown field", data: "cwd: .\nrun: go run .\nwatch: true\n"},
+		{name: "missing services", data: "cwd: .\nrun: go run .\n"},
+		{name: "empty services", data: "projects: {}\n"},
+		{name: "missing cwd", data: "projects:\n  backend:\n    run: go run .\n"},
+		{name: "missing run", data: "projects:\n  backend:\n    cwd: .\n"},
+		{name: "invalid port", data: "projects:\n  backend:\n    cwd: .\n    run: go run .\n    port: 65536\n"},
+		{name: "unknown service field", data: "projects:\n  backend:\n    cwd: .\n    run: go run .\n    watch: true\n"},
+		{name: "unknown top level field", data: "projects:\n  backend:\n    cwd: .\n    run: go run .\nwatch: true\n"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -94,8 +104,19 @@ func TestDecodeProjectFileRejectsInvalidEntries(t *testing.T) {
 	}
 }
 
-func TestCreateConfigWritesOneProjectWithoutOverwriting(t *testing.T) {
-	folder := projectTestFolder(t, "backend")
+func TestProjectServicesCannotShareLogFile(t *testing.T) {
+	folder := projectTestFolder(t, "nala-labs")
+	config, err := decodeProjectFile([]byte("projects:\n  backend:\n    cwd: .\n    run: go run ./backend\n    log: logs/shared.log\n  frontend:\n    cwd: .\n    run: npm run dev\n    log: logs/shared.log\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := projectForFolder(folder, config); err == nil || !strings.Contains(err.Error(), "same log path") {
+		t.Fatalf("services sharing a log path should be rejected, got %v", err)
+	}
+}
+
+func TestCreateConfigWritesOneServiceProjectWithoutOverwriting(t *testing.T) {
+	folder := projectTestFolder(t, "nala-labs")
 	manager := NewManager()
 	state, err := manager.LoadFolder(folder)
 	if err != nil {
@@ -108,15 +129,15 @@ func TestCreateConfigWritesOneProjectWithoutOverwriting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.NeedsConfig || len(state.Projects) != 1 || state.Projects[0].Name != "backend" || state.Projects[0].Port == nil || *state.Projects[0].Port != 8090 {
+	if state.NeedsConfig || len(state.Projects) != 1 || state.Projects[0].Name != "nala-labs" || len(state.Projects[0].Services) != 1 || state.Projects[0].Services[0].Name != "nala-labs" || state.Projects[0].Services[0].Port == nil || *state.Projects[0].Services[0].Port != 8090 {
 		t.Fatalf("created workspace state = %#v", state)
 	}
 	data, err := os.ReadFile(filepath.Join(folder, configFilename))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "cwd: .") || !strings.Contains(string(data), "run: go run . --port 8090") || !strings.Contains(string(data), "port: 8090") || strings.Contains(string(data), "projects:") {
-		t.Fatalf("created config does not contain the expected top-level fields: %s", data)
+	if !strings.Contains(string(data), "projects:") || !strings.Contains(string(data), "nala-labs:") || !strings.Contains(string(data), "cwd: .") || !strings.Contains(string(data), "run: go run . --port 8090") || !strings.Contains(string(data), "port: 8090") {
+		t.Fatalf("created config does not contain the expected project service map: %s", data)
 	}
 	if err := createProjectFile(folder, CreateProjectInput{CWD: ".", Run: "npm run dev"}); err == nil {
 		t.Fatal("expected existing nala.yml to be preserved")
@@ -139,7 +160,7 @@ func TestCreateConfigInfersPortFromListenerAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := config.Port; got == nil || *got != 8080 {
+	if got := config.Projects["setup"].Port; got == nil || *got != 8080 {
 		t.Fatalf("created config port = %v, want 8080", got)
 	}
 }
