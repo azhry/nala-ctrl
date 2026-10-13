@@ -347,7 +347,7 @@ function App() {
         </nav>
 
         <div className="sidebar-bottom">
-          <span className="local-indicator"><i /> LOCAL MACHINE</span>
+          <span className="local-indicator">LOCAL MACHINE</span>
           <span className="sidebar-footnote">Each added folder contributes one project. Switching projects leaves running processes alone.</span>
         </div>
       </aside>
@@ -359,7 +359,7 @@ function App() {
             {selected && <><Icon name="chevron" /><span className="crumb-project">{selected.name}</span></>}
           </div>
           <div className="topbar-actions">
-            {(workspace.folder || workspace.projects.length > 0) && <span className="local-pill"><i /> This machine</span>}
+            {(workspace.folder || workspace.projects.length > 0) && <span className="local-pill">This machine</span>}
             <button className="icon-button" onClick={chooseFolder} title="Add project folder" aria-label="Add project folder" disabled={busyAction === 'folder'}><Icon name="folder-plus" /></button>
           </div>
         </header>
@@ -420,18 +420,17 @@ function App() {
 function WelcomeScreen({ onChoose, busy }: { onChoose: () => void; busy: boolean }) {
   return (
     <section className="welcome-screen">
-      <div className="welcome-grid" aria-hidden="true" />
       <div className="welcome-content">
-        <div className="welcome-emblem"><Icon name="terminal" /><span className="emblem-signal" /></div>
+        <div className="welcome-emblem"><Icon name="terminal" /></div>
         <p className="eyebrow">A CLEAR VIEW OF WHAT'S RUNNING</p>
         <h1>Your project,<br /><em>under control.</em></h1>
         <p className="welcome-copy">Choose a project folder to see its status, follow its output, and start or stop it from one quiet place.</p>
         <button className="primary-button welcome-button" onClick={onChoose} disabled={busy}>
-          <Icon name="folder-plus" /> {busy ? 'Opening folder…' : 'Choose project folder'} <Icon className="button-arrow" name="arrow" />
+          <Icon name="folder-plus" /> {busy ? 'Opening folder…' : 'Choose project folder'}
         </button>
         <div className="welcome-note"><span className="note-line" /> Looks for <code>nala.yml</code> at the folder root</div>
       </div>
-      <div className="welcome-footer"><span>01 / SELECT WORKSPACE</span><span>LOCAL · PRIVATE · SIMPLE</span></div>
+      <div className="welcome-footer"><span>LOCAL PROCESS MONITOR</span><span>ONE PROJECT PER CONFIG</span></div>
     </section>
   );
 }
@@ -467,7 +466,7 @@ function SetupScreen({
         <input id="project-port" className="text-field mono-field" value={form.port} onChange={(event) => update('port', event.target.value)} placeholder="Auto-detect from command" type="number" min="1" max="65535" />
         <p className="field-help">A clear port flag or common dev-server default is detected when this is blank.</p>
         <div className="config-preview"><span>CREATES</span><code>{folderName(folder)} · nala.yml · cwd · run · port</code></div>
-        <button className="primary-button setup-submit" type="submit" disabled={busy}>{busy ? 'Creating config…' : 'Create nala.yml'}<Icon name="arrow" /></button>
+        <button className="primary-button setup-submit" type="submit" disabled={busy}>{busy ? 'Creating config…' : 'Create nala.yml'}</button>
       </form>
     </section>
   );
@@ -489,18 +488,30 @@ function ProjectScreen({
   const running = details?.running ?? false;
   const owner = details?.portOwner ?? null;
   const lines = details?.logLines ?? [];
-  const isBusy = busyAction === 'run' || busyAction === 'stop';
+  const isBusy = busyAction === 'run' || busyAction === 'stop' || details === null;
+  const processState = !details ? 'checking' : busyAction === 'run' ? 'starting' : busyAction === 'stop' ? 'stopping' : running ? 'running' : 'stopped';
+  const processStateLabel = processState === 'checking' ? 'Checking process' : processState === 'starting' ? 'Starting process' : processState === 'stopping' ? 'Stopping process' : running ? 'Running' : 'Stopped';
   return (
     <section className="project-screen">
       <div className="project-heading">
         <div className="project-heading-copy">
-          <p className="eyebrow">CONFIGURED PROJECT</p>
-          <div className="project-title-row"><span className={`large-status-dot${running ? ' live' : ''}`} /><h1>{project.name}</h1></div>
-          <p className="run-command"><Icon name="terminal" /><code>{project.run}</code><span>in</span><code className="cwd-inline">{project.cwd}</code></p>
+          <div className="project-title-row">
+            <span className={`large-status-dot${running ? ' live' : details ? ' stopped' : ' checking'}`} aria-hidden="true" />
+            <div className="project-title-copy">
+              <h1>{project.name}</h1>
+              <div className={`process-status${running ? ' live' : ''}`} role="status" aria-live="polite">
+                <strong>{processStateLabel}</strong>
+                <span>{running ? `PID ${details?.pid}` : processState === 'checking' ? 'Reading process state' : owner ? `${owner.name} holds the port` : 'No managed process'}</span>
+              </div>
+            </div>
+          </div>
+          <p className="run-command"><Icon name="terminal" /><span>Run command</span><code title={project.run}>{project.run}</code></p>
         </div>
         <div className="project-actions">
           <button className="icon-button refresh-button" onClick={onRefresh} title="Refresh project" aria-label="Refresh project"><Icon name="refresh" /></button>
-          {running ? (
+          {!details ? (
+            <button className="secondary-button" disabled><Icon name="refresh" />Checking process…</button>
+          ) : running ? (
             <button className="stop-button" onClick={onStop} disabled={isBusy}><Icon name="stop" />{busyAction === 'stop' ? 'Stopping…' : 'Stop project'}</button>
           ) : (
             <button className="run-button" onClick={onRun} disabled={isBusy}><Icon name="play" />{busyAction === 'run' ? 'Starting…' : 'Run project'}</button>
@@ -508,28 +519,21 @@ function ProjectScreen({
         </div>
       </div>
 
-      <div className="summary-grid">
-        <article className={`summary-card status-card${running ? ' is-running' : ''}`}>
-          <div className="summary-label"><span>PROCESS</span><Icon name="server" /></div>
-          <div className="summary-value">{details ? (running ? 'Running' : 'Stopped') : 'Checking'}</div>
-          <div className="summary-meta">{running ? `PID ${details?.pid}` : owner ? `${owner.name} holds the port` : 'Managed by Nala Ctrl'}</div>
-          <div className={`card-signal${running ? ' active' : ''}`}><i /><i /><i /><i /><i /><i /><i /><i /><i /></div>
-        </article>
-        <article className="summary-card">
-          <div className="summary-label"><span>PORT</span><span className={`port-state${owner ? ' occupied' : ''}`}><i />{owner ? 'IN USE' : project.port ? 'AVAILABLE' : 'NOT SET'}</span></div>
-          <div className="summary-value">{project.port ? `:${project.port}` : '—'}</div>
-          <div className="summary-meta">{owner ? `${owner.name} · PID ${owner.pid}` : project.port ? 'Ready for this project' : 'No port check configured'}</div>
-        </article>
-        <article className="summary-card cwd-card">
-          <div className="summary-label"><span>WORKING DIRECTORY</span><Icon name="folder" /></div>
-          <div className="cwd-value" title={project.cwd}>{project.cwd}</div>
-          <div className="summary-meta">Output → {project.logPath}</div>
-        </article>
+      <div className="project-meta" aria-label="Project details">
+        <div className="project-meta-item">
+          <span>PORT</span>
+          <strong>{project.port ? `:${project.port}` : 'Not configured'}</strong>
+          <small>{owner ? `${owner.name} · PID ${owner.pid}` : project.port ? 'Available' : 'Port check is not configured'}</small>
+        </div>
+        <div className="project-meta-item">
+          <span>WORKING DIRECTORY</span>
+          <code title={project.cwd}>{project.cwd}</code>
+        </div>
       </div>
 
       <section className="log-panel" aria-label={`${project.name} log stream`}>
         <div className="log-panel-head">
-          <div className="log-title"><span className="log-live-mark"><i /></span><div><h2>Output stream</h2><p>{details?.logPath ?? project.logPath}</p></div></div>
+          <div className="log-title"><Icon className="log-terminal-icon" name="terminal" /><div><h2>Output stream</h2><p>{details?.logPath ?? project.logPath}</p></div></div>
           <div className="log-controls">
             <span className="log-count">{details ? `${lines.length} lines · ${formatBytes(details.logSize)}` : 'Loading log…'}</span>
             <button className={`follow-button${followLogs ? ' following' : ''}`} onClick={onToggleFollow} aria-pressed={followLogs}><span className="follow-dot" />{followLogs ? 'Following' : 'Follow logs'}</button>
@@ -543,7 +547,7 @@ function ProjectScreen({
           )}
           <div ref={logEndRef} />
         </div>
-        <div className="log-panel-foot"><span><i className={running ? 'foot-live' : ''} />{running ? 'STREAM ACTIVE' : 'STREAM IDLE'}</span><span>Live Wails events · last 250 lines</span></div>
+        <div className="log-panel-foot"><span><i className={running ? 'foot-live' : ''} />{running ? 'STREAM ACTIVE' : 'STREAM IDLE'}</span><span>Live output · latest 250 lines</span></div>
       </section>
     </section>
   );
