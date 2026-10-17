@@ -67,7 +67,7 @@ function App() {
   const [conflictError, setConflictError] = useState('');
   const [followLogs, setFollowLogs] = useState(true);
   const [form, setForm] = useState<CreateProjectInput>({ cwd: '.', run: 'go run .', port: '' });
-  const logEndRef = useRef<HTMLDivElement>(null);
+  const logScreenRef = useRef<HTMLDivElement>(null);
 
   const refreshDetails = useCallback(async (serviceId: string, isCurrent: () => boolean = () => selectedServiceRef.current === serviceId) => {
     const stateVersion = serviceStateVersions.current[serviceId] ?? 0;
@@ -199,8 +199,9 @@ function App() {
   }, [selected?.id, refreshDetails]);
 
   useEffect(() => {
-    if (followLogs && details?.logLines.length) {
-      logEndRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
+    const logScreen = logScreenRef.current;
+    if (followLogs && logScreen && details?.logLines.length) {
+      logScreen.scrollTo({ top: logScreen.scrollHeight, behavior: 'smooth' });
     }
   }, [details?.logLines, followLogs]);
 
@@ -350,20 +351,9 @@ function App() {
           <div className="brand-type"><strong>nala<span>ctrl</span></strong><small>LOCAL PROCESS DESK</small></div>
         </div>
 
-        <div className="workspace-label">LOCAL WORKSPACE</div>
-        <button className="workspace-card" onClick={chooseFolder} disabled={busyAction === 'folder'} title="Add a project from another folder">
-          <span className="workspace-card-icon"><Icon name="folder" /></span>
-          <span className="workspace-card-copy">
-            <strong>{selectedProject?.name ?? (workspace.folder ? folderName(workspace.folder) : 'Add a project folder')}</strong>
-            <small>{selectedProject ? 'Add another project folder' : workspace.folder ? 'Folder selected' : 'Choose a folder with nala.yml'}</small>
-          </span>
-          <Icon className="workspace-chevron" name="folder-plus" />
-        </button>
-        {(selectedProject?.folder || workspace.folder) && <div className="workspace-path" title={selectedProject?.folder || workspace.folder}>{displayFolderPath(selectedProject?.folder || workspace.folder)}</div>}
-
         <div className="project-nav-head">
           <span>PROJECTS</span>
-          <span className="project-count" aria-label={`${workspace.projects.length} projects`}>{workspace.projects.length}</span>
+          <span className="project-count">{workspace.projects.length} {workspace.projects.length === 1 ? 'project' : 'projects'}</span>
           <button className="add-project-button" onClick={chooseFolder} disabled={busyAction === 'folder'} title="Add project folder" aria-label="Add project folder"><Icon name="folder-plus" /></button>
         </div>
         <nav className="project-list" aria-label="Configured projects">
@@ -373,7 +363,6 @@ function App() {
                 <div className="project-group-head">
                   <span className="project-group-icon"><Icon name="folder" /></span>
                   <span className="project-group-copy"><strong>{project.name}</strong><small title={project.folder}>{displayFolderPath(project.folder)}</small></span>
-                  <span className="project-group-count" title={`${project.services.length} configured services`}>{project.services.length}</span>
                 </div>
                 <div className="project-services" role="group" aria-label={`${project.name} services`}>
                   {project.services.map((service) => {
@@ -460,7 +449,7 @@ function App() {
               details={details}
               busyAction={serviceActions[selected.id] ?? null}
               followLogs={followLogs}
-              logEndRef={logEndRef}
+              logScreenRef={logScreenRef}
               onRun={runService}
               onStop={stopService}
               onRefresh={() => void refreshDetails(selected.id).catch((caught) => setError(errorMessage(caught)))}
@@ -541,14 +530,14 @@ function SetupScreen({
 }
 
 function ProjectScreen({
-  project, service, details, busyAction, followLogs, logEndRef, onRun, onStop, onRefresh, onToggleFollow,
+  project, service, details, busyAction, followLogs, logScreenRef, onRun, onStop, onRefresh, onToggleFollow,
 }: {
   project: Project;
   service: Project['services'][number];
   details: ProjectDetails | null;
   busyAction: ServiceAction | null;
   followLogs: boolean;
-  logEndRef: RefObject<HTMLDivElement | null>;
+  logScreenRef: RefObject<HTMLDivElement | null>;
   onRun: () => void;
   onStop: () => void;
   onRefresh: () => void;
@@ -610,13 +599,12 @@ function ProjectScreen({
             <button className={`follow-button${followLogs ? ' following' : ''}`} onClick={onToggleFollow} aria-pressed={followLogs}><span className="follow-dot" />{followLogs ? 'Following' : 'Follow logs'}</button>
           </div>
         </div>
-        <div className="log-screen" role="log" aria-live="off" aria-relevant="additions text">
+        <div ref={logScreenRef} className="log-screen" role="log" aria-live="off" aria-relevant="additions text">
           {lines.length ? lines.map((line, index) => (
             <div className="log-line" key={`${index}-${line}`}><span className="line-number">{String(index + 1).padStart(3, '0')}</span><span className="line-text">{line || ' '}</span></div>
           )) : (
             <div className="log-empty"><div className="log-empty-mark"><Icon name="terminal" /></div><strong>No output yet</strong><span>{running ? 'Waiting for the service to write its first line.' : 'Run this service to start capturing its output.'}</span></div>
           )}
-          <div ref={logEndRef} />
         </div>
         <div className="log-panel-foot"><span><i className={running ? 'foot-live' : ''} />{running ? 'STREAM ACTIVE' : 'STREAM IDLE'}</span><span>Live output · latest 250 lines</span></div>
       </section>
