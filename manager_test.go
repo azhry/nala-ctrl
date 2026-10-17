@@ -209,7 +209,7 @@ func TestPortConflictReportsCurrentProcessAndRefusesToStopIt(t *testing.T) {
 	defer listener.Close()
 	port := listener.Addr().(*net.TCPAddr).Port
 	folder := projectTestFolder(t, "backend")
-	if err := os.WriteFile(filepath.Join(folder, configFilename), []byte(fmt.Sprintf("projects:\n  backend:\n    cwd: .\n    run: %q\n    port: %d\n", "echo should-not-run", port)), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(folder, configFilename), fmt.Appendf(nil, "projects:\n  backend:\n    cwd: .\n    run: %q\n    port: %d\n", "echo should-not-run", port), 0644); err != nil {
 		t.Fatal(err)
 	}
 	manager := NewManager()
