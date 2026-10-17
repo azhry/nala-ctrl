@@ -55,6 +55,7 @@ function App() {
   const [workspace, setWorkspace] = useState<WorkspaceState>(emptyWorkspace);
   const [selectedServiceId, setSelectedServiceId] = useState('');
   const selectedServiceRef = useRef('');
+  const [setupOpen, setSetupOpen] = useState(false);
   const [serviceStatuses, setServiceStatuses] = useState<Record<string, ServiceStatus>>({});
   const [serviceActions, setServiceActions] = useState<Record<string, ServiceAction>>({});
   const serviceStateVersions = useRef<Record<string, number>>({});
@@ -118,6 +119,7 @@ function App() {
       const result = await ChooseFolder();
       if (!result) return;
       setWorkspace(result);
+      setSetupOpen(result.needsConfig);
       setPortConflict(null);
       setPortConflictServiceId('');
       setConflictError('');
@@ -218,6 +220,7 @@ function App() {
     try {
       const next = await CreateConfig(form);
       setWorkspace(next);
+      setSetupOpen(false);
       const createdProject = next.projects.find((project) => sameFolder(project.folder, next.folder) || sameFolder(project.id, next.folder));
       const nextServiceId = createdProject?.services[0]?.id ?? next.projects.flatMap((project) => project.services)[0]?.id ?? '';
       if (nextServiceId !== selectedServiceRef.current) setDetails(null);
@@ -318,6 +321,7 @@ function App() {
   };
 
   const selectService = (service: Project['services'][number]) => {
+    setSetupOpen(false);
     if (service.id === selectedServiceId) {
       setError('');
       setNotice('');
@@ -334,6 +338,18 @@ function App() {
   };
 
   const resumeSetup = () => {
+    setSetupOpen(true);
+    selectServiceId('');
+    setDetails(null);
+    setError('');
+    setNotice('');
+    setPortConflict(null);
+    setPortConflictServiceId('');
+    setConflictError('');
+  };
+
+  const navigateHome = () => {
+    setSetupOpen(false);
     selectServiceId('');
     setDetails(null);
     setError('');
@@ -346,10 +362,10 @@ function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand-lockup" aria-label="Nala Ctrl">
-          <div className="brand-mark"><span /></div>
-          <div className="brand-type"><strong>nala<span>ctrl</span></strong><small>LOCAL PROCESS DESK</small></div>
-        </div>
+        <button className="brand-lockup" onClick={navigateHome} aria-label="Go to project overview" title="Project overview">
+          <span className="brand-mark"><span /></span>
+          <span className="brand-type"><strong>nala<span>ctrl</span></strong><small>LOCAL PROCESS DESK</small></span>
+        </button>
 
         <div className="project-nav-head">
           <span>PROJECTS</span>
@@ -401,7 +417,8 @@ function App() {
       <main className="main-area">
         <header className="topbar">
           <div className="breadcrumb">
-            <span>PROJECTS</span><Icon name="chevron" /><strong title={selectedProject?.folder || workspace.folder}>{selectedProject?.name ?? (workspace.folder ? folderName(workspace.folder) : 'No folder selected')}</strong>
+            {selected ? <button className="breadcrumb-home" onClick={navigateHome} aria-label="Go to project overview" title="Project overview">PROJECTS</button> : <span aria-current="page">PROJECTS</span>}
+            <Icon name="chevron" /><strong title={setupOpen ? workspace.folder : selectedProject?.folder || workspace.folder}>{selectedProject?.name ?? (setupOpen && workspace.folder ? folderName(workspace.folder) : 'Overview')}</strong>
             {selected && <><Icon name="chevron" /><span className="crumb-project">{selected.name}</span></>}
           </div>
           <div className="topbar-actions">
@@ -415,7 +432,7 @@ function App() {
           {notice && <div className="message-banner notice-banner" role="status"><Icon name="check" /><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Dismiss notification"><Icon name="close" /></button></div>}
 
           {!workspace.folder && !workspace.projects.length && <WelcomeScreen onChoose={chooseFolder} busy={busyAction === 'folder'} />}
-          {workspace.folder && workspace.needsConfig && !selected && (
+          {workspace.folder && workspace.needsConfig && setupOpen && !selected && (
             <SetupScreen folder={workspace.folder} form={form} setForm={setForm} onSubmit={createConfig} busy={busyAction === 'config'} />
           )}
           {workspace.folder && workspace.needsConfig && selected && (
@@ -441,6 +458,24 @@ function App() {
               <p>Choose another project folder with configured services, or finish setup for the folder that needs it.</p>
               <button className="secondary-button" onClick={chooseFolder}><Icon name="folder-plus" /> Add project folder</button>
             </div>
+          )}
+          {workspace.needsConfig && !setupOpen && !selected && !serviceEntries.length && (
+            <div className="empty-project-state">
+              <div className="empty-glyph"><Icon name="folder-plus" /></div>
+              <p className="eyebrow">SETUP PAUSED</p>
+              <h1>Continue project setup</h1>
+              <p><code>{folderName(workspace.folder)}</code> does not have a <code>nala.yml</code> yet.</p>
+              <button className="secondary-button" onClick={resumeSetup}>Finish setup for {folderName(workspace.folder)}</button>
+            </div>
+          )}
+          {serviceEntries.length > 0 && !selected && !setupOpen && (
+            <ProjectOverview
+              projects={workspace.projects}
+              serviceStatuses={serviceStatuses}
+              needsConfigFolder={workspace.needsConfig ? workspace.folder : ''}
+              onSelectService={selectService}
+              onResumeSetup={resumeSetup}
+            />
           )}
           {selected && (
             <ProjectScreen
@@ -471,6 +506,57 @@ function App() {
         />
       )}
     </div>
+  );
+}
+
+function ProjectOverview({
+  projects, serviceStatuses, needsConfigFolder, onSelectService, onResumeSetup,
+}: {
+  projects: Project[];
+  serviceStatuses: Record<string, ServiceStatus>;
+  needsConfigFolder: string;
+  onSelectService: (service: Project['services'][number]) => void;
+  onResumeSetup: () => void;
+}) {
+  return (
+    <section className="overview-screen" aria-labelledby="overview-title">
+      <header className="overview-heading">
+        <p className="eyebrow">LOCAL WORKSPACE</p>
+        <h1 id="overview-title">Project overview</h1>
+        <p>Select a service to inspect its process and output.</p>
+      </header>
+      {needsConfigFolder && (
+        <div className="pending-setup-banner" role="status">
+          <span><strong>{folderName(needsConfigFolder)} needs setup</strong><small>Its nala.yml has not been created. Other projects and services keep running.</small></span>
+          <button className="secondary-button" onClick={onResumeSetup}>Finish setup for {folderName(needsConfigFolder)}</button>
+        </div>
+      )}
+      <div className="overview-project-list">
+        {projects.map((project) => (
+          <section key={project.id} className="overview-project" aria-label={`${project.name} project`}>
+            <header className="overview-project-head">
+              <div><h2>{project.name}</h2><p title={project.folder}>{displayFolderPath(project.folder)}</p></div>
+              <span>{project.services.length} {project.services.length === 1 ? 'service' : 'services'}</span>
+            </header>
+            {project.services.length > 0 ? (
+              <div className="overview-service-list" role="group" aria-label={`${project.name} services`}>
+                {project.services.map((service) => {
+                  const status = serviceStatuses[service.id];
+                  const stateLabel = status ? (status.running ? `Running · PID ${status.pid}` : 'Stopped') : 'Select to check status';
+                  return (
+                    <button key={service.id} className="overview-service" onClick={() => onSelectService(service)} aria-label={`${project.name}, ${service.name}, ${stateLabel}`}>
+                      <span className="overview-service-copy"><strong>{service.name}</strong><small>{service.port ? `PORT ${service.port}` : 'NO PORT CHECK'}</small></span>
+                      <span className={`overview-service-status${status?.running ? ' live' : ''}`}><i aria-hidden="true" />{stateLabel}</span>
+                      <Icon name="chevron" />
+                    </button>
+                  );
+                })}
+              </div>
+            ) : <p className="overview-no-services">No services configured in this nala.yml.</p>}
+          </section>
+        ))}
+      </div>
+    </section>
   );
 }
 
