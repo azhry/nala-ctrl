@@ -1,0 +1,25 @@
+:root {
+  font-family: var(--sans);
+  color: #27352d;
+  background: #eaf0e9;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  --canvas: #edf2ec;
+  --sidebar: #19241f;
+  --sage: #b6d2bb;
+  --rust: #cf7b57;
+  --ink-muted: #5b685e;
+  --ink-muted-dark: #a6b2a9;
+  --display: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  --sans: "Segoe UI", "Aptos", system-ui, sans-serif;
+  --mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { width: 100%; min-width: 0; min-height: 100%; margin: 0; }
+body { min-height: 100vh; }
+button, input { font: inherit; }
+button { -webkit-tap-highlight-color: transparent; }
+::selection { color: #f7faf5; background: #6d9272; }
