@@ -57,6 +57,14 @@ func (p *ProjectManager) GetProjectDetails(projectID string) (*ProjectDetails, e
 	return p.manager.GetProjectDetails(projectID)
 }
 
+func (p *ProjectManager) GetProjectGitBranchState(projectID string) (*GitBranchState, error) {
+	return p.manager.GetProjectGitBranchState(projectID)
+}
+
+func (p *ProjectManager) SwitchProjectGitBranch(projectID, branchName string) (*GitBranchState, error) {
+	return p.manager.SwitchProjectGitBranch(projectID, branchName)
+}
+
 func (p *ProjectManager) RunProject(projectID string) (RunResult, error) {
 	return p.manager.RunProject(projectID)
 }

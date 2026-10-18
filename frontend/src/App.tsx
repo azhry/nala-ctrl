@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, FormEvent, RefObject, SetStateAction } from 'react';
-import { ChooseFolder, CreateConfig, GetProjectDetails, RunProject, StopProject, TerminatePortOwnerAndRun } from '../wailsjs/go/main/ProjectManager';
+import { ChooseFolder, CreateConfig, GetProjectDetails, GetProjectGitBranchState, RunProject, StopProject, SwitchProjectGitBranch, TerminatePortOwnerAndRun } from '../wailsjs/go/main/ProjectManager';
 import { EventsOn } from '../wailsjs/runtime/runtime';
 import { Icon } from './icons';
-import type { CreateProjectInput, ProcessIdentity, Project, ProjectDetails, ProjectLogEvent, ProjectStateEvent, WorkspaceState } from './types';
+import type { CreateProjectInput, GitBranchState, ProcessIdentity, Project, ProjectDetails, ProjectLogEvent, ProjectStateEvent, WorkspaceState } from './types';
 import './App.css';
 
 type GlobalBusyAction = 'folder' | 'config' | null;
@@ -677,6 +677,8 @@ function ProjectScreen({
         </div>
       </div>
 
+      <ProjectBranchControl key={project.id} project={project} />
+
       <section className="log-panel" aria-label={`${project.name} ${service.name} log stream`}>
         <div className="log-panel-head">
           <div className="log-title"><Icon className="log-terminal-icon" name="terminal" /><div><h2>Output stream</h2><p>{details?.logPath ?? service.logPath}</p></div></div>
@@ -694,6 +696,165 @@ function ProjectScreen({
         </div>
         <div className="log-panel-foot"><span><i className={running ? 'foot-live' : ''} />{running ? 'STREAM ACTIVE' : 'STREAM IDLE'}</span><span>Live output · latest 250 lines</span></div>
       </section>
+    </section>
+  );
+}
+
+function ProjectBranchControl({ project }: { project: Project }) {
+  const [branchState, setBranchState] = useState<GitBranchState | null>(null);
+  const [selectedBranch, setSelectedBranch] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [switching, setSwitching] = useState(false);
+  const [error, setError] = useState('');
+  const [status, setStatus] = useState('');
+  const requestVersion = useRef(0);
+  const projectId = project.id;
+
+  const refreshBranchState = useCallback(async () => {
+    const version = ++requestVersion.current;
+    setLoading(true);
+    setError('');
+    setStatus('');
+
+    try {
+      const next = await GetProjectGitBranchState(projectId);
+      if (requestVersion.current !== version) return;
+      setBranchState(next);
+      setSelectedBranch(next.currentBranch || next.branches[0] || '');
+    } catch (caught) {
+      if (requestVersion.current !== version) return;
+      setBranchState(null);
+      setSelectedBranch('');
+      setError(`Couldn't load Git branches: ${errorMessage(caught)}`);
+    } finally {
+      if (requestVersion.current === version) setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    setBranchState(null);
+    setSelectedBranch('');
+    setError('');
+    setStatus('');
+    setSwitching(false);
+    void refreshBranchState();
+    return () => { requestVersion.current += 1; };
+  }, [refreshBranchState]);
+
+  const branchOptions = branchState?.available
+    ? Array.from(new Set([branchState.currentBranch, ...branchState.branches].filter(Boolean)))
+    : [];
+  const canSwitch = Boolean(
+    branchState?.available
+    && !loading
+    && !switching
+    && selectedBranch
+    && selectedBranch !== branchState.currentBranch,
+  );
+
+  const switchBranch = async () => {
+    if (!branchState?.available || !canSwitch) return;
+
+    const targetBranch = selectedBranch;
+    const version = requestVersion.current;
+    setSwitching(true);
+    setError('');
+    setStatus(`Switching to ${targetBranch}…`);
+
+    try {
+      let switchedState: GitBranchState;
+      try {
+        switchedState = await SwitchProjectGitBranch(projectId, targetBranch);
+      } catch (caught) {
+        if (requestVersion.current !== version) return;
+        setError(`Could not switch to ${targetBranch}: ${errorMessage(caught)}`);
+        setStatus('');
+        return;
+      }
+
+      if (requestVersion.current !== version) return;
+      setBranchState(switchedState);
+      setSelectedBranch(switchedState.currentBranch || switchedState.branches[0] || '');
+
+      try {
+        const refreshed = await GetProjectGitBranchState(projectId);
+        if (requestVersion.current !== version) return;
+        setBranchState(refreshed);
+        setSelectedBranch(refreshed.currentBranch || refreshed.branches[0] || '');
+        setStatus(`Switched to ${refreshed.currentBranch || switchedState.currentBranch || targetBranch}.`);
+      } catch (caught) {
+        if (requestVersion.current !== version) return;
+        setError(`Switched to ${switchedState.currentBranch || targetBranch}, but couldn't refresh branch details: ${errorMessage(caught)}`);
+        setStatus('');
+      }
+    } finally {
+      if (requestVersion.current === version) setSwitching(false);
+    }
+  };
+
+  return (
+    <section className="branch-control" aria-labelledby="branch-control-title">
+      <div className="branch-control-summary">
+        <div className="branch-control-title-group">
+          <p className="eyebrow">PROJECT REPOSITORY</p>
+          <h2 id="branch-control-title">Git branch</h2>
+        </div>
+        {branchState?.available && branchState.repositoryRoot && (
+          <p className="branch-repository" title={branchState.repositoryRoot}>
+            <span>Repository</span>
+            <code>{displayFolderPath(branchState.repositoryRoot)}</code>
+          </p>
+        )}
+      </div>
+
+      {loading ? (
+        <p className="branch-message" role="status" aria-live="polite">Loading local branches…</p>
+      ) : branchState && !branchState.available ? (
+        <p className="branch-message" role="status" aria-live="polite">
+          Branch switching is unavailable because this folder is outside a Git working tree.
+        </p>
+      ) : branchState ? (
+        <>
+          <div className="branch-control-row">
+            <label htmlFor="project-branch-select">Switch to</label>
+            <select
+              id="project-branch-select"
+              className="branch-select"
+              value={selectedBranch}
+              onChange={(event) => {
+                setSelectedBranch(event.target.value);
+                setError('');
+                setStatus('');
+              }}
+              disabled={loading || switching || !branchOptions.length}
+              aria-describedby="project-branch-feedback"
+            >
+              {!branchOptions.length && <option value="">No local branches found</option>}
+              {branchOptions.map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+            </select>
+            <button className="secondary-button branch-switch-button" type="button" onClick={() => void switchBranch()} disabled={!canSwitch}>
+              {switching ? 'Switching…' : 'Switch branch'}
+            </button>
+          </div>
+          <p
+            id="project-branch-feedback"
+            className={`branch-message${error ? ' branch-message-error' : status ? ' branch-message-success' : ''}`}
+            role={error ? 'alert' : 'status'}
+            aria-live={error ? 'assertive' : 'polite'}
+          >
+            {error || status || (branchState.currentBranch ? `Current branch: ${branchState.currentBranch}` : 'No branch is currently checked out.')}
+          </p>
+        </>
+      ) : (
+        <div className="branch-load-error">
+          <p className="branch-message branch-message-error" role="alert" aria-live="assertive">
+            {error || "Branch information couldn't be loaded."}
+          </p>
+          <button className="secondary-button branch-retry-button" type="button" onClick={() => void refreshBranchState()}>
+            Retry branch status
+          </button>
+        </div>
+      )}
     </section>
   );
 }

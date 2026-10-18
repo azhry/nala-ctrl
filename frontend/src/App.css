@@ -158,6 +158,26 @@
 .project-meta-item strong { overflow:hidden; color:#3b4b40; font-family:var(--mono); font-size:11px; font-weight:550; text-overflow:ellipsis; white-space:nowrap; }
 .project-meta-item small { overflow:hidden; color:var(--ink-muted); font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
 .project-meta-item code { overflow:hidden; color:#53665a; font-family:var(--mono); font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
+.branch-control { display:flex; min-width:0; flex-direction:column; gap:10px; padding:13px 14px; border:1px solid #dce4dc; border-radius:7px; background:#f8faf7; }
+.branch-control-summary { display:flex; min-width:0; align-items:center; justify-content:space-between; gap:12px 22px; }
+.branch-control-title-group { min-width:0; }
+.branch-control-title-group .eyebrow { margin:0 0 4px; color:#718176; }
+.branch-control-title-group h2 { margin:0; color:#35453a; font-size:13px; font-weight:620; letter-spacing:-.15px; }
+.branch-repository { display:flex; min-width:0; align-items:center; gap:8px; margin:0; color:var(--ink-muted); font-size:10px; }
+.branch-repository span { flex:0 0 auto; }
+.branch-repository code { overflow:hidden; max-width:42vw; color:#53665a; font-family:var(--mono); font-size:9px; text-overflow:ellipsis; white-space:nowrap; }
+.branch-control-row { display:flex; min-width:0; align-items:center; gap:8px; }
+.branch-control-row label { flex:0 0 auto; color:#526157; font-size:10px; font-weight:620; }
+.branch-select { min-width:0; min-height:44px; flex:1; padding:0 10px; color:#3b4b40; border:1px solid #d8e1d8; border-radius:6px; background:#fff; font-family:var(--mono); font-size:11px; }
+.branch-select:disabled { color:#718176; background:#f1f4f0; cursor:not-allowed; }
+.branch-select:focus-visible { outline:2px solid #829e86; outline-offset:2px; }
+.branch-switch-button { min-width:130px; white-space:nowrap; }
+.branch-switch-button:disabled,.branch-retry-button:disabled { opacity:1; cursor:not-allowed; }
+.branch-message { min-height:15px; margin:0; color:var(--ink-muted); font-size:10px; line-height:1.5; overflow-wrap:anywhere; }
+.branch-message-error { color:#8b4f3e; }
+.branch-message-success { color:#4d7354; }
+.branch-load-error { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.branch-retry-button { min-height:40px; flex:0 0 auto; padding:0 10px; font-size:10px; }
 .log-panel { display:flex; width:100%; height:clamp(300px,48vh,480px); min-height:0; flex:0 0 auto; flex-direction:column; overflow:hidden; border:1px solid #27342d; border-radius:10px; background:#18211d; }
 .log-panel-head { display:flex; min-height:66px; align-items:center; justify-content:space-between; gap:12px; padding:0 18px; border-bottom:1px solid rgba(222,236,224,.09); background:#1d2923; }
 .log-title { display:flex; min-width:0; align-items:center; gap:10px; }
@@ -242,6 +262,7 @@
 button:focus-visible,.text-field:focus-visible { outline:2px solid #829e86; outline-offset:2px; }
 
 .secondary-button:disabled { opacity:1; cursor:progress; }
+.branch-control .secondary-button:disabled { cursor:not-allowed; }
 
 @media (max-width:1080px) {
   .sidebar { flex-basis:225px; }
@@ -279,6 +300,15 @@ button:focus-visible,.text-field:focus-visible { outline:2px solid #829e86; outl
   .project-title-row h1 { font-size:clamp(32px,8vw,37px); }
   .run-command { margin-left:24px; }
   .project-meta { grid-template-columns:minmax(0,1fr); gap:12px; }
+  .branch-control-summary { align-items:flex-start; flex-direction:column; }
+  .branch-repository { width:100%; align-items:flex-start; flex-direction:column; gap:4px; }
+  .branch-repository code { max-width:100%; }
+  .branch-control-row { align-items:stretch; flex-wrap:wrap; }
+  .branch-control-row label { width:100%; }
+  .branch-select { width:100%; flex-basis:100%; }
+  .branch-switch-button { flex:1; }
+  .branch-load-error { align-items:stretch; flex-direction:column; }
+  .branch-retry-button { width:100%; }
   .project-actions { width:100%; }
   .project-actions .run-button,.project-actions .stop-button,.project-actions .secondary-button { flex:1; }
   .log-panel { height:clamp(300px,56vh,460px); }

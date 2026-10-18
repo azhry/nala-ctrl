@@ -14,6 +14,13 @@ export interface Project {
   services: Service[];
 }
 
+export interface GitBranchState {
+  available: boolean;
+  repositoryRoot: string;
+  currentBranch: string;
+  branches: string[];
+}
+
 export interface WorkspaceState {
   folder: string;
   needsConfig: boolean;

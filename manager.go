@@ -20,6 +20,7 @@ const (
 
 type Manager struct {
 	mu           sync.RWMutex
+	gitMu        sync.Mutex
 	folder       string
 	needsConfig  bool
 	projects     map[string]Project

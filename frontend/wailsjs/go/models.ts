@@ -16,6 +16,24 @@ export namespace main {
 	        this.port = source["port"];
 	    }
 	}
+	export class GitBranchState {
+	    available: boolean;
+	    repositoryRoot: string;
+	    currentBranch: string;
+	    branches: string[];
+
+	    static createFrom(source: any = {}) {
+	        return new GitBranchState(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.available = source["available"];
+	        this.repositoryRoot = source["repositoryRoot"];
+	        this.currentBranch = source["currentBranch"];
+	        this.branches = source["branches"];
+	    }
+	}
 	export class ProcessIdentity {
 	    pid: number;
 	    name: string;
