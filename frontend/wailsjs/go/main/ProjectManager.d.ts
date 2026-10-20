@@ -8,6 +8,8 @@ export function CreateConfig(arg1:main.CreateProjectInput):Promise<main.Workspac
 
 export function GetProjectDetails(arg1:string):Promise<main.ProjectDetails>;
 
+export function GetWorkspace():Promise<main.WorkspaceState>;
+
 export function LoadFolder(arg1:string):Promise<main.WorkspaceState>;
 
 export function RunProject(arg1:string):Promise<main.RunResult>;

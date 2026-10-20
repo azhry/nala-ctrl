@@ -19,15 +19,21 @@ const (
 )
 
 type Manager struct {
-	mu           sync.RWMutex
-	folder       string
-	needsConfig  bool
-	projects     map[string]Project
-	services     map[string]projectSpec
-	running      map[string]*managedProcess
-	starting     map[string]bool
-	logHandler   func(ProjectLogEvent)
-	stateHandler func(ProjectStateEvent)
+	mu                sync.RWMutex
+	restoreOnce       sync.Once
+	folder            string
+	needsConfig       bool
+	projects          map[string]Project
+	services          map[string]projectSpec
+	running           map[string]*managedProcess
+	starting          map[string]bool
+	logHandler        func(ProjectLogEvent)
+	stateHandler      func(ProjectStateEvent)
+	registryPath      string
+	registryFolders   []string
+	registryReadable  bool
+	registryPathError string
+	workspaceWarnings []string
 }
 
 type managedProcess struct {
@@ -69,11 +75,21 @@ type ProjectDetails struct {
 }
 
 func NewManager() *Manager {
+	path, err := defaultProjectFolderRegistryPath()
+	manager := newManagerWithRegistryPath(path)
+	if err != nil {
+		manager.registryPathError = err.Error()
+	}
+	return manager
+}
+
+func newManagerWithRegistryPath(registryPath string) *Manager {
 	return &Manager{
-		projects: make(map[string]Project),
-		services: make(map[string]projectSpec),
-		running:  make(map[string]*managedProcess),
-		starting: make(map[string]bool),
+		projects:     make(map[string]Project),
+		services:     make(map[string]projectSpec),
+		running:      make(map[string]*managedProcess),
+		starting:     make(map[string]bool),
+		registryPath: registryPath,
 	}
 }
 
@@ -108,15 +124,83 @@ func (m *Manager) publishState(event ProjectStateEvent) {
 }
 
 func (m *Manager) Workspace() *WorkspaceState {
+	m.restoreSavedProjectsOnce()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.workspaceLocked()
+}
+
+func (m *Manager) restoreSavedProjectsOnce() {
+	m.restoreOnce.Do(m.restoreSavedProjects)
+}
+
+func (m *Manager) restoreSavedProjects() {
+	if m.registryPathError != "" {
+		m.mu.Lock()
+		m.addWorkspaceWarningLocked("Saved projects could not be loaded: " + m.registryPathError)
+		m.mu.Unlock()
+		return
+	}
+	folders, err := readProjectFolderRegistry(m.registryPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		m.mu.Lock()
+		m.addWorkspaceWarningLocked("Saved projects could not be loaded: " + err.Error())
+		m.mu.Unlock()
+		return
+	}
+	m.mu.Lock()
+	m.registryReadable = true
+	m.registryFolders = folders
+	m.mu.Unlock()
+
+	seen := make(map[string]struct{}, len(folders))
+	for _, savedFolder := range folders {
+		if !filepath.IsAbs(savedFolder) {
+			m.mu.Lock()
+			m.addWorkspaceWarningLocked(fmt.Sprintf("Saved project folder %q is not an absolute path and was skipped.", savedFolder))
+			m.mu.Unlock()
+			continue
+		}
+		folder := filepath.Clean(savedFolder)
+		identity := projectIDForFolder(folder)
+		if _, exists := seen[identity]; exists {
+			continue
+		}
+		seen[identity] = struct{}{}
+
+		loaded, err := readProjectFolder(folder)
+		if err != nil {
+			m.mu.Lock()
+			m.addWorkspaceWarningLocked(fmt.Sprintf("Could not restore project folder %q: %v", folder, err))
+			m.mu.Unlock()
+			continue
+		}
+		if loaded.needsConfig {
+			m.mu.Lock()
+			m.addWorkspaceWarningLocked(fmt.Sprintf("Could not restore project folder %q because it no longer contains %s.", folder, configFilename))
+			m.mu.Unlock()
+			continue
+		}
+		m.mu.Lock()
+		m.addProjectLocked(loaded.project, loaded.specs)
+		m.mu.Unlock()
+	}
+}
+
+func (m *Manager) addWorkspaceWarningLocked(warning string) {
+	for _, existing := range m.workspaceWarnings {
+		if existing == warning {
+			return
+		}
+	}
+	m.workspaceWarnings = append(m.workspaceWarnings, warning)
 }
 
 func (m *Manager) workspaceLocked() *WorkspaceState {
 	state := &WorkspaceState{
 		Folder: m.folder, NeedsConfig: m.needsConfig,
 		Projects: make([]Project, 0, len(m.projects)),
+		Warnings: append([]string(nil), m.workspaceWarnings...),
 	}
 	ids := make([]string, 0, len(m.projects))
 	for id := range m.projects {
@@ -136,20 +220,57 @@ func (m *Manager) workspaceLocked() *WorkspaceState {
 }
 
 func (m *Manager) LoadFolder(folder string) (*WorkspaceState, error) {
+	m.restoreSavedProjectsOnce()
+	loaded, err := readProjectFolder(folder)
+	if err != nil {
+		return nil, err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.folder = loaded.folder
+	m.needsConfig = loaded.needsConfig
+	if !loaded.needsConfig {
+		if _, exists := m.projects[loaded.project.ID]; !exists {
+			if m.registryReadable {
+				folders, added := appendProjectFolder(m.registryFolders, loaded.folder)
+				if added {
+					if err := writeProjectFolderRegistry(m.registryPath, folders); err != nil {
+						m.addWorkspaceWarningLocked("This project is available for this session, but its folder could not be saved for the next launch: " + err.Error())
+					} else {
+						m.registryFolders = folders
+					}
+				}
+			}
+			m.addProjectLocked(loaded.project, loaded.specs)
+		}
+	}
+	return m.workspaceLocked(), nil
+}
+
+type loadedProjectFolder struct {
+	folder      string
+	project     Project
+	specs       map[string]projectSpec
+	needsConfig bool
+}
+
+func readProjectFolder(folder string) (loadedProjectFolder, error) {
 	folder = strings.TrimSpace(folder)
 	if folder == "" {
-		return nil, errors.New("choose a project folder")
+		return loadedProjectFolder{}, errors.New("choose a project folder")
 	}
 	folder, err := filepath.Abs(folder)
 	if err != nil {
-		return nil, fmt.Errorf("resolve project folder: %w", err)
+		return loadedProjectFolder{}, fmt.Errorf("resolve project folder: %w", err)
 	}
+	folder = filepath.Clean(folder)
 	info, err := os.Stat(folder)
 	if err != nil {
-		return nil, fmt.Errorf("open project folder: %w", err)
+		return loadedProjectFolder{}, fmt.Errorf("open project folder: %w", err)
 	}
 	if !info.IsDir() {
-		return nil, errors.New("project path must be a folder")
+		return loadedProjectFolder{}, errors.New("project path must be a folder")
 	}
 
 	configPath := filepath.Join(folder, configFilename)
@@ -159,35 +280,30 @@ func (m *Manager) LoadFolder(folder string) (*WorkspaceState, error) {
 	needsConfig := false
 	if readErr != nil {
 		if !errors.Is(readErr, os.ErrNotExist) {
-			return nil, fmt.Errorf("read %s: %w", configFilename, readErr)
+			return loadedProjectFolder{}, fmt.Errorf("read %s: %w", configFilename, readErr)
 		}
 		needsConfig = true
 	} else {
 		file, err := decodeProjectFile(data)
 		if err != nil {
-			return nil, err
+			return loadedProjectFolder{}, err
 		}
 		project, specs, err = projectForFolder(folder, file)
 		if err != nil {
-			return nil, err
+			return loadedProjectFolder{}, err
 		}
 	}
+	return loadedProjectFolder{folder: folder, project: project, specs: specs, needsConfig: needsConfig}, nil
+}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.folder = folder
-	m.needsConfig = needsConfig
-	if !needsConfig {
-		// Loading a folder adds it to this app session. Re-adding a folder
-		// selects its existing project without replacing its process or log state.
-		if _, exists := m.projects[project.ID]; !exists {
-			m.projects[project.ID] = project
-			for serviceID, spec := range specs {
-				m.services[serviceID] = spec
-			}
-		}
+func (m *Manager) addProjectLocked(project Project, specs map[string]projectSpec) {
+	if _, exists := m.projects[project.ID]; exists {
+		return
 	}
-	return m.workspaceLocked(), nil
+	m.projects[project.ID] = project
+	for serviceID, spec := range specs {
+		m.services[serviceID] = spec
+	}
 }
 
 func (m *Manager) CreateConfig(input CreateProjectInput) (*WorkspaceState, error) {

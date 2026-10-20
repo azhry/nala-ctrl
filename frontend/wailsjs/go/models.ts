@@ -191,6 +191,7 @@ export namespace main {
 	    folder: string;
 	    needsConfig: boolean;
 	    projects: Project[];
+	    warnings?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new WorkspaceState(source);
@@ -201,6 +202,7 @@ export namespace main {
 	        this.folder = source["folder"];
 	        this.needsConfig = source["needsConfig"];
 	        this.projects = this.convertValues(source["projects"], Project);
+	        this.warnings = source["warnings"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, FormEvent, RefObject, SetStateAction } from 'react';
-import { ChooseFolder, CreateConfig, GetProjectDetails, RunProject, StopProject, TerminatePortOwnerAndRun } from '../wailsjs/go/main/ProjectManager';
+import { ChooseFolder, CreateConfig, GetProjectDetails, GetWorkspace, RunProject, StopProject, TerminatePortOwnerAndRun } from '../wailsjs/go/main/ProjectManager';
 import { EventsOn } from '../wailsjs/runtime/runtime';
 import { Icon } from './icons';
 import type { CreateProjectInput, ProcessIdentity, Project, ProjectDetails, ProjectLogEvent, ProjectStateEvent, WorkspaceState } from './types';
@@ -16,6 +16,11 @@ const emptyWorkspace: WorkspaceState = { folder: '', needsConfig: false, project
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function workspaceWarningMessages(workspace: WorkspaceState): string[] {
+  const warnings = (workspace as WorkspaceState & { warnings?: unknown }).warnings;
+  return Array.isArray(warnings) ? warnings.filter((warning): warning is string => typeof warning === 'string') : [];
 }
 
 function folderName(path: string): string {
@@ -53,8 +58,12 @@ function appendLogEvent(details: ProjectDetails, event: ProjectLogEvent): Projec
 
 function App() {
   const [workspace, setWorkspace] = useState<WorkspaceState>(emptyWorkspace);
+  const [workspaceHydrating, setWorkspaceHydrating] = useState(true);
+  const [workspaceWarnings, setWorkspaceWarnings] = useState<string[]>([]);
   const [selectedServiceId, setSelectedServiceId] = useState('');
   const selectedServiceRef = useRef('');
+  const workspaceHydrationRef = useRef<Promise<WorkspaceState> | null>(null);
+  const workspaceChangeVersion = useRef(0);
   const [setupOpen, setSetupOpen] = useState(false);
   const [serviceStatuses, setServiceStatuses] = useState<Record<string, ServiceStatus>>({});
   const [serviceActions, setServiceActions] = useState<Record<string, ServiceAction>>({});
@@ -102,6 +111,28 @@ function App() {
     setSelectedServiceId(serviceId);
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    const version = workspaceChangeVersion.current;
+    workspaceHydrationRef.current ??= Promise.resolve().then(() => GetWorkspace());
+
+    void workspaceHydrationRef.current.then((restored) => {
+      if (cancelled || workspaceChangeVersion.current !== version) return;
+      const firstServiceId = restored.projects.flatMap((project) => project.services)[0]?.id ?? '';
+      setWorkspace(restored);
+      setWorkspaceWarnings(workspaceWarningMessages(restored));
+      setSetupOpen(restored.needsConfig && !firstServiceId);
+      selectServiceId(firstServiceId);
+    }).catch((caught) => {
+      if (cancelled || workspaceChangeVersion.current !== version) return;
+      setError(`Unable to restore saved projects: ${errorMessage(caught)}`);
+    }).finally(() => {
+      if (!cancelled) setWorkspaceHydrating(false);
+    });
+
+    return () => { cancelled = true; };
+  }, [selectServiceId]);
+
   const setServiceAction = (serviceId: string, action: ServiceAction | null) => {
     setServiceActions((current) => {
       const next = { ...current };
@@ -118,7 +149,9 @@ function App() {
     try {
       const result = await ChooseFolder();
       if (!result) return;
+      workspaceChangeVersion.current += 1;
       setWorkspace(result);
+      setWorkspaceWarnings(workspaceWarningMessages(result));
       setSetupOpen(result.needsConfig);
       setPortConflict(null);
       setPortConflictServiceId('');
@@ -219,7 +252,9 @@ function App() {
     setError('');
     try {
       const next = await CreateConfig(form);
+      workspaceChangeVersion.current += 1;
       setWorkspace(next);
+      setWorkspaceWarnings(workspaceWarningMessages(next));
       setSetupOpen(false);
       const createdProject = next.projects.find((project) => sameFolder(project.folder, next.folder) || sameFolder(project.id, next.folder));
       const nextServiceId = createdProject?.services[0]?.id ?? next.projects.flatMap((project) => project.services)[0]?.id ?? '';
@@ -429,7 +464,9 @@ function App() {
 
         <div className="content-scroll">
           {error && <div className="message-banner error-banner" role="alert"><Icon name="warning" /><span>{error}</span><button onClick={() => setError('')} aria-label="Dismiss error"><Icon name="close" /></button></div>}
+          {workspaceWarnings.length > 0 && <div className="message-banner error-banner" role="status" aria-live="polite"><Icon name="warning" /><span>Workspace warning: {workspaceWarnings.join(' ')}</span><button onClick={() => setWorkspaceWarnings([])} aria-label="Dismiss workspace warnings"><Icon name="close" /></button></div>}
           {notice && <div className="message-banner notice-banner" role="status"><Icon name="check" /><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Dismiss notification"><Icon name="close" /></button></div>}
+          {workspaceHydrating && <div className="message-banner notice-banner" role="status" aria-live="polite"><Icon name="refresh" /><span>Restoring saved projects…</span></div>}
 
           {!workspace.folder && !workspace.projects.length && <WelcomeScreen onChoose={chooseFolder} busy={busyAction === 'folder'} />}
           {workspace.folder && workspace.needsConfig && setupOpen && !selected && (

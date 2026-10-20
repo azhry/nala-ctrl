@@ -16,6 +16,11 @@ func projectTestFolder(t *testing.T, name string) string {
 	return folder
 }
 
+func newTestManager(t *testing.T) *Manager {
+	t.Helper()
+	return newManagerWithRegistryPath(filepath.Join(t.TempDir(), "user-config", "project-folders.json"))
+}
+
 func TestDecodeProjectFileAndResolveDefaults(t *testing.T) {
 	folder := projectTestFolder(t, "nala-labs")
 	data := []byte("projects:\n  backend:\n    cwd: ./api\n    run: go run . --port=8081\n  frontend:\n    cwd: ./web\n    run: npm run dev -- --port 5173\n")
@@ -117,7 +122,8 @@ func TestProjectServicesCannotShareLogFile(t *testing.T) {
 
 func TestCreateConfigWritesOneServiceProjectWithoutOverwriting(t *testing.T) {
 	folder := projectTestFolder(t, "nala-labs")
-	manager := NewManager()
+	registryPath := filepath.Join(t.TempDir(), "user-config", "project-folders.json")
+	manager := newManagerWithRegistryPath(registryPath)
 	state, err := manager.LoadFolder(folder)
 	if err != nil {
 		t.Fatal(err)
@@ -138,6 +144,10 @@ func TestCreateConfigWritesOneServiceProjectWithoutOverwriting(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "projects:") || !strings.Contains(string(data), "nala-labs:") || !strings.Contains(string(data), "cwd: .") || !strings.Contains(string(data), "run: go run . --port 8090") || !strings.Contains(string(data), "port: 8090") {
 		t.Fatalf("created config does not contain the expected project service map: %s", data)
+	}
+	restored := newManagerWithRegistryPath(registryPath).Workspace()
+	if len(restored.Projects) != 1 || restored.Projects[0].Folder != folder {
+		t.Fatalf("project created during setup was not restored: %#v", restored.Projects)
 	}
 	if err := createProjectFile(folder, CreateProjectInput{CWD: ".", Run: "npm run dev"}); err == nil {
 		t.Fatal("expected existing nala.yml to be preserved")
