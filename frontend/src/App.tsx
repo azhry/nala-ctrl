@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, FormEvent, RefObject, SetStateAction } from 'react';
-import { ChooseFolder, CreateConfig, GetProjectDetails, GetProjectGitBranchState, RunProject, StopProject, SwitchProjectGitBranch, TerminatePortOwnerAndRun } from '../wailsjs/go/main/ProjectManager';
+import { ChooseFolder, CreateConfig, GetProjectDetails, GetProjectGitBranchState, GetWorkspace, RunProject, StopProject, SwitchProjectGitBranch, TerminatePortOwnerAndRun } from '../wailsjs/go/main/ProjectManager';
 import { EventsOn } from '../wailsjs/runtime/runtime';
 import { Icon } from './icons';
 import type { CreateProjectInput, GitBranchState, ProcessIdentity, Project, ProjectDetails, ProjectLogEvent, ProjectStateEvent, WorkspaceState } from './types';
@@ -16,6 +16,11 @@ const emptyWorkspace: WorkspaceState = { folder: '', needsConfig: false, project
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function workspaceWarningMessages(workspace: WorkspaceState): string[] {
+  const warnings = (workspace as WorkspaceState & { warnings?: unknown }).warnings;
+  return Array.isArray(warnings) ? warnings.filter((warning): warning is string => typeof warning === 'string') : [];
 }
 
 function folderName(path: string): string {
@@ -53,8 +58,12 @@ function appendLogEvent(details: ProjectDetails, event: ProjectLogEvent): Projec
 
 function App() {
   const [workspace, setWorkspace] = useState<WorkspaceState>(emptyWorkspace);
+  const [workspaceHydrating, setWorkspaceHydrating] = useState(true);
+  const [workspaceWarnings, setWorkspaceWarnings] = useState<string[]>([]);
   const [selectedServiceId, setSelectedServiceId] = useState('');
   const selectedServiceRef = useRef('');
+  const workspaceHydrationRef = useRef<Promise<WorkspaceState> | null>(null);
+  const workspaceChangeVersion = useRef(0);
   const [setupOpen, setSetupOpen] = useState(false);
   const [serviceStatuses, setServiceStatuses] = useState<Record<string, ServiceStatus>>({});
   const [serviceActions, setServiceActions] = useState<Record<string, ServiceAction>>({});
@@ -102,6 +111,28 @@ function App() {
     setSelectedServiceId(serviceId);
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    const version = workspaceChangeVersion.current;
+    workspaceHydrationRef.current ??= Promise.resolve().then(() => GetWorkspace());
+
+    void workspaceHydrationRef.current.then((restored) => {
+      if (cancelled || workspaceChangeVersion.current !== version) return;
+      const firstServiceId = restored.projects.flatMap((project) => project.services)[0]?.id ?? '';
+      setWorkspace(restored);
+      setWorkspaceWarnings(workspaceWarningMessages(restored));
+      setSetupOpen(restored.needsConfig && !firstServiceId);
+      selectServiceId(firstServiceId);
+    }).catch((caught) => {
+      if (cancelled || workspaceChangeVersion.current !== version) return;
+      setError(`Unable to restore saved projects: ${errorMessage(caught)}`);
+    }).finally(() => {
+      if (!cancelled) setWorkspaceHydrating(false);
+    });
+
+    return () => { cancelled = true; };
+  }, [selectServiceId]);
+
   const setServiceAction = (serviceId: string, action: ServiceAction | null) => {
     setServiceActions((current) => {
       const next = { ...current };
@@ -118,7 +149,10 @@ function App() {
     try {
       const result = await ChooseFolder();
       if (!result) return;
+      workspaceChangeVersion.current += 1;
+      setWorkspaceHydrating(false);
       setWorkspace(result);
+      setWorkspaceWarnings(workspaceWarningMessages(result));
       setSetupOpen(result.needsConfig);
       setPortConflict(null);
       setPortConflictServiceId('');
@@ -219,7 +253,10 @@ function App() {
     setError('');
     try {
       const next = await CreateConfig(form);
+      workspaceChangeVersion.current += 1;
+      setWorkspaceHydrating(false);
       setWorkspace(next);
+      setWorkspaceWarnings(workspaceWarningMessages(next));
       setSetupOpen(false);
       const createdProject = next.projects.find((project) => sameFolder(project.folder, next.folder) || sameFolder(project.id, next.folder));
       const nextServiceId = createdProject?.services[0]?.id ?? next.projects.flatMap((project) => project.services)[0]?.id ?? '';
@@ -369,8 +406,8 @@ function App() {
 
         <div className="project-nav-head">
           <span>PROJECTS</span>
-          <span className="project-count">{workspace.projects.length} {workspace.projects.length === 1 ? 'project' : 'projects'}</span>
-          <button className="add-project-button" onClick={chooseFolder} disabled={busyAction === 'folder'} title="Add project folder" aria-label="Add project folder"><Icon name="folder-plus" /></button>
+          <span className="project-count">{workspaceHydrating ? 'Restoring…' : `${workspace.projects.length} ${workspace.projects.length === 1 ? 'project' : 'projects'}`}</span>
+          <button className="add-project-button" onClick={chooseFolder} disabled={workspaceHydrating || busyAction === 'folder'} title="Add project folder" aria-label="Add project folder"><Icon name="folder-plus" /></button>
         </div>
         <nav className="project-list" aria-label="Configured projects">
           {workspace.projects.map((project) => {
@@ -405,7 +442,7 @@ function App() {
             );
           })}
           {!workspace.projects.length && workspace.needsConfig && <div className="nav-empty">Finish setup to add this folder's project.</div>}
-          {!workspace.projects.length && !workspace.folder && <div className="nav-empty">Add a project folder to get started.</div>}
+          {!workspaceHydrating && !workspace.projects.length && !workspace.folder && <div className="nav-empty">Add a project folder to get started.</div>}
         </nav>
 
         <div className="sidebar-bottom">
@@ -423,14 +460,18 @@ function App() {
           </div>
           <div className="topbar-actions">
             {(workspace.folder || workspace.projects.length > 0) && <span className="local-pill">This machine</span>}
-            <button className="icon-button" onClick={chooseFolder} title="Add project folder" aria-label="Add project folder" disabled={busyAction === 'folder'}><Icon name="folder-plus" /></button>
+            <button className="icon-button" onClick={chooseFolder} title="Add project folder" aria-label="Add project folder" disabled={workspaceHydrating || busyAction === 'folder'}><Icon name="folder-plus" /></button>
           </div>
         </header>
 
         <div className="content-scroll">
           {error && <div className="message-banner error-banner" role="alert"><Icon name="warning" /><span>{error}</span><button onClick={() => setError('')} aria-label="Dismiss error"><Icon name="close" /></button></div>}
+          {workspaceWarnings.length > 0 && <div className="message-banner error-banner" role="status" aria-live="polite"><Icon name="warning" /><span>Workspace warning: {workspaceWarnings.join(' ')}</span><button onClick={() => setWorkspaceWarnings([])} aria-label="Dismiss workspace warnings"><Icon name="close" /></button></div>}
           {notice && <div className="message-banner notice-banner" role="status"><Icon name="check" /><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Dismiss notification"><Icon name="close" /></button></div>}
-
+          {workspaceHydrating ? (
+            <div className="workspace-loading-state" role="status" aria-live="polite"><Icon name="refresh" /><span>Restoring saved projects…</span></div>
+          ) : (
+            <>
           {!workspace.folder && !workspace.projects.length && <WelcomeScreen onChoose={chooseFolder} busy={busyAction === 'folder'} />}
           {workspace.folder && workspace.needsConfig && setupOpen && !selected && (
             <SetupScreen folder={workspace.folder} form={form} setForm={setForm} onSubmit={createConfig} busy={busyAction === 'config'} />
@@ -490,6 +531,8 @@ function App() {
               onRefresh={() => void refreshDetails(selected.id).catch((caught) => setError(errorMessage(caught)))}
               onToggleFollow={() => setFollowLogs((value) => !value)}
             />
+          )}
+            </>
           )}
         </div>
       </main>

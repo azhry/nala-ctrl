@@ -25,6 +25,7 @@ export interface WorkspaceState {
   folder: string;
   needsConfig: boolean;
   projects: Project[];
+  warnings?: string[];
 }
 
 export interface CreateProjectInput {

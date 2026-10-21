@@ -45,6 +45,10 @@ func (p *ProjectManager) ChooseFolder() (*WorkspaceState, error) {
 	return p.manager.LoadFolder(folder)
 }
 
+func (p *ProjectManager) GetWorkspace() *WorkspaceState {
+	return p.manager.Workspace()
+}
+
 func (p *ProjectManager) LoadFolder(folder string) (*WorkspaceState, error) {
 	return p.manager.LoadFolder(folder)
 }
