@@ -77,7 +77,7 @@ func TestProjectGitBranchStateUnavailableOutsideGit(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(folder, configFilename), []byte("projects:\n  api:\n    cwd: .\n    run: go run .\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManager()
+	manager := newTestManager(t)
 	workspace, err := manager.LoadFolder(folder)
 	if err != nil {
 		t.Fatal(err)
@@ -112,7 +112,7 @@ func gitTestProject(t *testing.T) (*Manager, Project, string) {
 	gitTestCommand(t, gitPath, folder, "-c", "user.name=Nala Ctrl Test", "-c", "user.email=nala-ctrl@example.test", "commit", "-m", "initial project")
 	gitTestCommand(t, gitPath, folder, "branch", "feature/azh-523")
 
-	manager := NewManager()
+	manager := newTestManager(t)
 	workspace, err := manager.LoadFolder(folder)
 	if err != nil {
 		t.Fatal(err)
