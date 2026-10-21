@@ -4,11 +4,11 @@ export namespace main {
 	    cwd: string;
 	    run: string;
 	    port: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new CreateProjectInput(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.cwd = source["cwd"];
@@ -21,11 +21,11 @@ export namespace main {
 	    repositoryRoot: string;
 	    currentBranch: string;
 	    branches: string[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new GitBranchState(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.available = source["available"];
@@ -85,11 +85,11 @@ export namespace main {
 	    folder: string;
 	    name: string;
 	    services: Service[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Project(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -97,7 +97,7 @@ export namespace main {
 	        this.name = source["name"];
 	        this.services = this.convertValues(source["services"], Service);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -204,7 +204,7 @@ export namespace main {
 		    return a;
 		}
 	}
-
+	
 	export class WorkspaceState {
 	    folder: string;
 	    needsConfig: boolean;
