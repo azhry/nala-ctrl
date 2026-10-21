@@ -194,6 +194,8 @@
 .message-banner button svg { width:13px; height:13px; }
 .error-banner { color:#8b4f3e; border-color:#edcbbd; background:#fcf2ed; }
 .notice-banner { color:#4d7354; border-color:#d3e2d1; background:#f1f7ee; }
+.workspace-loading-state { display:flex; min-height:64vh; align-items:center; justify-content:center; gap:10px; color:var(--ink-muted); font-size:13px; }
+.workspace-loading-state svg { width:16px; height:16px; }
 .pending-setup-banner { display:flex; align-items:center; justify-content:space-between; gap:14px; margin-bottom:14px; padding:11px 13px; border:1px solid #d8e2d5; border-radius:7px; background:#f5f8f2; }
 .pending-setup-banner>span { display:flex; min-width:0; flex-direction:column; gap:4px; }
 .pending-setup-banner strong { overflow:hidden; color:#465b4b; font-size:11px; font-weight:620; text-overflow:ellipsis; white-space:nowrap; }
