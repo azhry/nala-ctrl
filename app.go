@@ -45,6 +45,10 @@ func (p *ProjectManager) ChooseFolder() (*WorkspaceState, error) {
 	return p.manager.LoadFolder(folder)
 }
 
+func (p *ProjectManager) GetWorkspace() *WorkspaceState {
+	return p.manager.Workspace()
+}
+
 func (p *ProjectManager) LoadFolder(folder string) (*WorkspaceState, error) {
 	return p.manager.LoadFolder(folder)
 }
@@ -55,6 +59,14 @@ func (p *ProjectManager) CreateConfig(input CreateProjectInput) (*WorkspaceState
 
 func (p *ProjectManager) GetProjectDetails(projectID string) (*ProjectDetails, error) {
 	return p.manager.GetProjectDetails(projectID)
+}
+
+func (p *ProjectManager) GetProjectGitBranchState(projectID string) (*GitBranchState, error) {
+	return p.manager.GetProjectGitBranchState(projectID)
+}
+
+func (p *ProjectManager) SwitchProjectGitBranch(projectID, branchName string) (*GitBranchState, error) {
+	return p.manager.SwitchProjectGitBranch(projectID, branchName)
 }
 
 func (p *ProjectManager) RunProject(projectID string) (RunResult, error) {

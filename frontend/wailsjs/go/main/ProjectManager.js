@@ -14,6 +14,14 @@ export function GetProjectDetails(arg1) {
   return window['go']['main']['ProjectManager']['GetProjectDetails'](arg1);
 }
 
+export function GetProjectGitBranchState(arg1) {
+  return window['go']['main']['ProjectManager']['GetProjectGitBranchState'](arg1);
+}
+
+export function GetWorkspace() {
+  return window['go']['main']['ProjectManager']['GetWorkspace']();
+}
+
 export function LoadFolder(arg1) {
   return window['go']['main']['ProjectManager']['LoadFolder'](arg1);
 }
@@ -24,6 +32,10 @@ export function RunProject(arg1) {
 
 export function StopProject(arg1) {
   return window['go']['main']['ProjectManager']['StopProject'](arg1);
+}
+
+export function SwitchProjectGitBranch(arg1, arg2) {
+  return window['go']['main']['ProjectManager']['SwitchProjectGitBranch'](arg1, arg2);
 }
 
 export function TerminatePortOwnerAndRun(arg1, arg2, arg3) {

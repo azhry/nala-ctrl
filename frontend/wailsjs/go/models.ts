@@ -4,16 +4,34 @@ export namespace main {
 	    cwd: string;
 	    run: string;
 	    port: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new CreateProjectInput(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.cwd = source["cwd"];
 	        this.run = source["run"];
 	        this.port = source["port"];
+	    }
+	}
+	export class GitBranchState {
+	    available: boolean;
+	    repositoryRoot: string;
+	    currentBranch: string;
+	    branches: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new GitBranchState(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.available = source["available"];
+	        this.repositoryRoot = source["repositoryRoot"];
+	        this.currentBranch = source["currentBranch"];
+	        this.branches = source["branches"];
 	    }
 	}
 	export class ProcessIdentity {
@@ -67,11 +85,11 @@ export namespace main {
 	    folder: string;
 	    name: string;
 	    services: Service[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Project(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -79,7 +97,7 @@ export namespace main {
 	        this.name = source["name"];
 	        this.services = this.convertValues(source["services"], Service);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -186,11 +204,12 @@ export namespace main {
 		    return a;
 		}
 	}
-
+	
 	export class WorkspaceState {
 	    folder: string;
 	    needsConfig: boolean;
 	    projects: Project[];
+	    warnings?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new WorkspaceState(source);
@@ -201,6 +220,7 @@ export namespace main {
 	        this.folder = source["folder"];
 	        this.needsConfig = source["needsConfig"];
 	        this.projects = this.convertValues(source["projects"], Project);
+	        this.warnings = source["warnings"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

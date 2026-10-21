@@ -57,6 +57,7 @@ type WorkspaceState struct {
 	Folder      string    `json:"folder"`
 	NeedsConfig bool      `json:"needsConfig"`
 	Projects    []Project `json:"projects"`
+	Warnings    []string  `json:"warnings,omitempty"`
 }
 
 type projectSpec struct {

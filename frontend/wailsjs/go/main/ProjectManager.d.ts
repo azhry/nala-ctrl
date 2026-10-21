@@ -8,10 +8,16 @@ export function CreateConfig(arg1:main.CreateProjectInput):Promise<main.Workspac
 
 export function GetProjectDetails(arg1:string):Promise<main.ProjectDetails>;
 
+export function GetProjectGitBranchState(arg1:string):Promise<main.GitBranchState>;
+
+export function GetWorkspace():Promise<main.WorkspaceState>;
+
 export function LoadFolder(arg1:string):Promise<main.WorkspaceState>;
 
 export function RunProject(arg1:string):Promise<main.RunResult>;
 
 export function StopProject(arg1:string):Promise<void>;
+
+export function SwitchProjectGitBranch(arg1:string,arg2:string):Promise<main.GitBranchState>;
 
 export function TerminatePortOwnerAndRun(arg1:string,arg2:number,arg3:number):Promise<main.RunResult>;

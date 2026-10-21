@@ -14,7 +14,7 @@ import (
 
 func TestManagedProcessLifecycleAndLogCapture(t *testing.T) {
 	folder := projectTestFolder(t, "backend")
-	manager := NewManager()
+	manager := newTestManager(t)
 	logEvents := make(chan ProjectLogEvent, 16)
 	manager.SetLogHandler(func(event ProjectLogEvent) { logEvents <- event })
 	if _, err := manager.LoadFolder(folder); err != nil {
@@ -80,6 +80,137 @@ func TestManagedProcessLifecycleAndLogCapture(t *testing.T) {
 	}
 }
 
+func TestAddedConfiguredProjectsRestoreAfterRestart(t *testing.T) {
+	registryPath := filepath.Join(t.TempDir(), "user-config", "project-folders.json")
+	firstFolder := projectTestFolder(t, "first-project")
+	latestFolder := projectTestFolder(t, "latest-project")
+	for _, folder := range []string{firstFolder, latestFolder} {
+		if err := os.WriteFile(filepath.Join(folder, configFilename), []byte("projects:\n  backend:\n    cwd: .\n    run: go run .\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	manager := newManagerWithRegistryPath(registryPath)
+	if _, err := manager.LoadFolder(firstFolder); err != nil {
+		t.Fatal(err)
+	}
+	state, err := manager.LoadFolder(latestFolder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Projects) != 2 {
+		t.Fatalf("projects before restart = %d, want both configured folders", len(state.Projects))
+	}
+	if _, err := manager.LoadFolder(latestFolder); err != nil {
+		t.Fatal(err)
+	}
+	folders, err := readProjectFolderRegistry(registryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(folders) != 2 {
+		t.Fatalf("saved folders = %v, want each configured folder once", folders)
+	}
+
+	restarted := newManagerWithRegistryPath(registryPath)
+	state = restarted.Workspace()
+	if len(state.Projects) != 2 {
+		t.Fatalf("projects after restart = %d, want 2: %#v", len(state.Projects), state)
+	}
+	if len(restarted.running) != 0 {
+		t.Fatalf("restoring saved projects started processes: %#v", restarted.running)
+	}
+	loadedFolders := map[string]bool{}
+	for _, project := range state.Projects {
+		loadedFolders[project.Folder] = true
+		if len(project.Services) != 1 || project.Services[0].Name != "backend" {
+			t.Fatalf("restored project services = %#v", project.Services)
+		}
+	}
+	if !loadedFolders[firstFolder] || !loadedFolders[latestFolder] {
+		t.Fatalf("restored folders = %v, want %q and %q", loadedFolders, firstFolder, latestFolder)
+	}
+}
+
+func TestProjectManagerPersistsConfiguredProjectAcrossRestarts(t *testing.T) {
+	userConfigDir := t.TempDir()
+	t.Setenv("APPDATA", userConfigDir)
+
+	folder := projectTestFolder(t, "default-registry-project")
+	if err := os.WriteFile(filepath.Join(folder, configFilename), []byte("projects:\n  backend:\n    cwd: .\n    run: go run .\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	firstLaunch := NewProjectManager()
+	state, err := firstLaunch.LoadFolder(folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Projects) != 1 || state.Projects[0].Folder != folder {
+		t.Fatalf("projects after adding folder = %#v, want %q", state.Projects, folder)
+	}
+
+	registryPath, err := defaultProjectFolderRegistryPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedFolders, err := readProjectFolderRegistry(registryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(savedFolders) != 1 || savedFolders[0] != folder {
+		t.Fatalf("saved folders = %v, want only %q", savedFolders, folder)
+	}
+
+	secondLaunch := NewProjectManager()
+	state = secondLaunch.GetWorkspace()
+	if len(state.Projects) != 1 || state.Projects[0].Folder != folder {
+		t.Fatalf("projects after restarting manager = %#v, want %q", state.Projects, folder)
+	}
+	if len(state.Projects[0].Services) != 1 || state.Projects[0].Services[0].Name != "backend" {
+		t.Fatalf("restored services = %#v, want backend", state.Projects[0].Services)
+	}
+	if len(secondLaunch.manager.running) != 0 {
+		t.Fatalf("restoring saved project started processes: %#v", secondLaunch.manager.running)
+	}
+}
+
+func TestRestoreSkipsMissingProjectAndKeepsItsSavedPath(t *testing.T) {
+	registryPath := filepath.Join(t.TempDir(), "user-config", "project-folders.json")
+	validFolder := projectTestFolder(t, "valid-project")
+	missingFolder := projectTestFolder(t, "removed-project")
+	for _, folder := range []string{validFolder, missingFolder} {
+		if err := os.WriteFile(filepath.Join(folder, configFilename), []byte("projects:\n  backend:\n    cwd: .\n    run: go run .\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manager := newManagerWithRegistryPath(registryPath)
+	if _, err := manager.LoadFolder(validFolder); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.LoadFolder(missingFolder); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(missingFolder); err != nil {
+		t.Fatal(err)
+	}
+
+	state := newManagerWithRegistryPath(registryPath).Workspace()
+	if len(state.Projects) != 1 || state.Projects[0].Folder != validFolder {
+		t.Fatalf("restored projects = %#v, want only %q", state.Projects, validFolder)
+	}
+	if len(state.Warnings) != 1 || !strings.Contains(state.Warnings[0], missingFolder) {
+		t.Fatalf("restore warnings = %v, want warning for %q", state.Warnings, missingFolder)
+	}
+	folders, err := readProjectFolderRegistry(registryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(folders) != 2 || folders[0] != validFolder || folders[1] != missingFolder {
+		t.Fatalf("saved folders after skipped restore = %v, want both original paths", folders)
+	}
+}
+
 func TestServicesInOneConfigKeepIndependentProcessesAndLogs(t *testing.T) {
 	folder := projectTestFolder(t, "nala-labs")
 	command := longRunningTestCommand()
@@ -88,7 +219,7 @@ func TestServicesInOneConfigKeepIndependentProcessesAndLogs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	manager := NewManager()
+	manager := newTestManager(t)
 	state, err := manager.LoadFolder(folder)
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +294,7 @@ func TestServicesInOneConfigKeepIndependentProcessesAndLogs(t *testing.T) {
 
 func TestProjectStateEventsCoverSilentExit(t *testing.T) {
 	folder := projectTestFolder(t, "backend")
-	manager := NewManager()
+	manager := newTestManager(t)
 	stateEvents := make(chan ProjectStateEvent, 2)
 	manager.SetStateHandler(func(event ProjectStateEvent) { stateEvents <- event })
 	if _, err := manager.LoadFolder(folder); err != nil {
@@ -212,7 +343,7 @@ func TestPortConflictReportsCurrentProcessAndRefusesToStopIt(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(folder, configFilename), fmt.Appendf(nil, "projects:\n  backend:\n    cwd: .\n    run: %q\n    port: %d\n", "echo should-not-run", port), 0644); err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManager()
+	manager := newTestManager(t)
 	if _, err := manager.LoadFolder(folder); err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +409,7 @@ func TestConfirmedPortTakeoverStopsExactOwnerAndRunsProject(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(folder, configFilename), []byte(config), 0644); err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManager()
+	manager := newTestManager(t)
 	if _, err := manager.LoadFolder(folder); err != nil {
 		t.Fatal(err)
 	}

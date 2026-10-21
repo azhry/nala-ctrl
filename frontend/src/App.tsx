@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, FormEvent, RefObject, SetStateAction } from 'react';
-import { ChooseFolder, CreateConfig, GetProjectDetails, RunProject, StopProject, TerminatePortOwnerAndRun } from '../wailsjs/go/main/ProjectManager';
+import { ChooseFolder, CreateConfig, GetProjectDetails, GetProjectGitBranchState, GetWorkspace, RunProject, StopProject, SwitchProjectGitBranch, TerminatePortOwnerAndRun } from '../wailsjs/go/main/ProjectManager';
 import { EventsOn } from '../wailsjs/runtime/runtime';
 import { Icon } from './icons';
-import type { CreateProjectInput, ProcessIdentity, Project, ProjectDetails, ProjectLogEvent, ProjectStateEvent, WorkspaceState } from './types';
+import type { CreateProjectInput, GitBranchState, ProcessIdentity, Project, ProjectDetails, ProjectLogEvent, ProjectStateEvent, WorkspaceState } from './types';
 import './App.css';
 
 type GlobalBusyAction = 'folder' | 'config' | null;
@@ -16,6 +16,11 @@ const emptyWorkspace: WorkspaceState = { folder: '', needsConfig: false, project
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function workspaceWarningMessages(workspace: WorkspaceState): string[] {
+  const warnings = (workspace as WorkspaceState & { warnings?: unknown }).warnings;
+  return Array.isArray(warnings) ? warnings.filter((warning): warning is string => typeof warning === 'string') : [];
 }
 
 function folderName(path: string): string {
@@ -53,8 +58,12 @@ function appendLogEvent(details: ProjectDetails, event: ProjectLogEvent): Projec
 
 function App() {
   const [workspace, setWorkspace] = useState<WorkspaceState>(emptyWorkspace);
+  const [workspaceHydrating, setWorkspaceHydrating] = useState(true);
+  const [workspaceWarnings, setWorkspaceWarnings] = useState<string[]>([]);
   const [selectedServiceId, setSelectedServiceId] = useState('');
   const selectedServiceRef = useRef('');
+  const workspaceHydrationRef = useRef<Promise<WorkspaceState> | null>(null);
+  const workspaceChangeVersion = useRef(0);
   const [setupOpen, setSetupOpen] = useState(false);
   const [serviceStatuses, setServiceStatuses] = useState<Record<string, ServiceStatus>>({});
   const [serviceActions, setServiceActions] = useState<Record<string, ServiceAction>>({});
@@ -102,6 +111,28 @@ function App() {
     setSelectedServiceId(serviceId);
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    const version = workspaceChangeVersion.current;
+    workspaceHydrationRef.current ??= Promise.resolve().then(() => GetWorkspace());
+
+    void workspaceHydrationRef.current.then((restored) => {
+      if (cancelled || workspaceChangeVersion.current !== version) return;
+      const firstServiceId = restored.projects.flatMap((project) => project.services)[0]?.id ?? '';
+      setWorkspace(restored);
+      setWorkspaceWarnings(workspaceWarningMessages(restored));
+      setSetupOpen(restored.needsConfig && !firstServiceId);
+      selectServiceId(firstServiceId);
+    }).catch((caught) => {
+      if (cancelled || workspaceChangeVersion.current !== version) return;
+      setError(`Unable to restore saved projects: ${errorMessage(caught)}`);
+    }).finally(() => {
+      if (!cancelled) setWorkspaceHydrating(false);
+    });
+
+    return () => { cancelled = true; };
+  }, [selectServiceId]);
+
   const setServiceAction = (serviceId: string, action: ServiceAction | null) => {
     setServiceActions((current) => {
       const next = { ...current };
@@ -118,7 +149,10 @@ function App() {
     try {
       const result = await ChooseFolder();
       if (!result) return;
+      workspaceChangeVersion.current += 1;
+      setWorkspaceHydrating(false);
       setWorkspace(result);
+      setWorkspaceWarnings(workspaceWarningMessages(result));
       setSetupOpen(result.needsConfig);
       setPortConflict(null);
       setPortConflictServiceId('');
@@ -219,7 +253,10 @@ function App() {
     setError('');
     try {
       const next = await CreateConfig(form);
+      workspaceChangeVersion.current += 1;
+      setWorkspaceHydrating(false);
       setWorkspace(next);
+      setWorkspaceWarnings(workspaceWarningMessages(next));
       setSetupOpen(false);
       const createdProject = next.projects.find((project) => sameFolder(project.folder, next.folder) || sameFolder(project.id, next.folder));
       const nextServiceId = createdProject?.services[0]?.id ?? next.projects.flatMap((project) => project.services)[0]?.id ?? '';
@@ -369,8 +406,8 @@ function App() {
 
         <div className="project-nav-head">
           <span>PROJECTS</span>
-          <span className="project-count">{workspace.projects.length} {workspace.projects.length === 1 ? 'project' : 'projects'}</span>
-          <button className="add-project-button" onClick={chooseFolder} disabled={busyAction === 'folder'} title="Add project folder" aria-label="Add project folder"><Icon name="folder-plus" /></button>
+          <span className="project-count">{workspaceHydrating ? 'Restoring…' : `${workspace.projects.length} ${workspace.projects.length === 1 ? 'project' : 'projects'}`}</span>
+          <button className="add-project-button" onClick={chooseFolder} disabled={workspaceHydrating || busyAction === 'folder'} title="Add project folder" aria-label="Add project folder"><Icon name="folder-plus" /></button>
         </div>
         <nav className="project-list" aria-label="Configured projects">
           {workspace.projects.map((project) => {
@@ -405,7 +442,7 @@ function App() {
             );
           })}
           {!workspace.projects.length && workspace.needsConfig && <div className="nav-empty">Finish setup to add this folder's project.</div>}
-          {!workspace.projects.length && !workspace.folder && <div className="nav-empty">Add a project folder to get started.</div>}
+          {!workspaceHydrating && !workspace.projects.length && !workspace.folder && <div className="nav-empty">Add a project folder to get started.</div>}
         </nav>
 
         <div className="sidebar-bottom">
@@ -423,14 +460,18 @@ function App() {
           </div>
           <div className="topbar-actions">
             {(workspace.folder || workspace.projects.length > 0) && <span className="local-pill">This machine</span>}
-            <button className="icon-button" onClick={chooseFolder} title="Add project folder" aria-label="Add project folder" disabled={busyAction === 'folder'}><Icon name="folder-plus" /></button>
+            <button className="icon-button" onClick={chooseFolder} title="Add project folder" aria-label="Add project folder" disabled={workspaceHydrating || busyAction === 'folder'}><Icon name="folder-plus" /></button>
           </div>
         </header>
 
         <div className="content-scroll">
           {error && <div className="message-banner error-banner" role="alert"><Icon name="warning" /><span>{error}</span><button onClick={() => setError('')} aria-label="Dismiss error"><Icon name="close" /></button></div>}
+          {workspaceWarnings.length > 0 && <div className="message-banner error-banner" role="status" aria-live="polite"><Icon name="warning" /><span>Workspace warning: {workspaceWarnings.join(' ')}</span><button onClick={() => setWorkspaceWarnings([])} aria-label="Dismiss workspace warnings"><Icon name="close" /></button></div>}
           {notice && <div className="message-banner notice-banner" role="status"><Icon name="check" /><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Dismiss notification"><Icon name="close" /></button></div>}
-
+          {workspaceHydrating ? (
+            <div className="workspace-loading-state" role="status" aria-live="polite"><Icon name="refresh" /><span>Restoring saved projects…</span></div>
+          ) : (
+            <>
           {!workspace.folder && !workspace.projects.length && <WelcomeScreen onChoose={chooseFolder} busy={busyAction === 'folder'} />}
           {workspace.folder && workspace.needsConfig && setupOpen && !selected && (
             <SetupScreen folder={workspace.folder} form={form} setForm={setForm} onSubmit={createConfig} busy={busyAction === 'config'} />
@@ -490,6 +531,8 @@ function App() {
               onRefresh={() => void refreshDetails(selected.id).catch((caught) => setError(errorMessage(caught)))}
               onToggleFollow={() => setFollowLogs((value) => !value)}
             />
+          )}
+            </>
           )}
         </div>
       </main>
@@ -636,47 +679,7 @@ function ProjectScreen({
   const processState = !details ? 'checking' : busyAction === 'run' ? 'starting' : busyAction === 'stop' || busyAction === 'terminate' ? 'stopping' : running ? 'running' : 'stopped';
   const processStateLabel = processState === 'checking' ? 'Checking process' : processState === 'starting' ? 'Starting process' : processState === 'stopping' ? 'Stopping process' : running ? 'Running' : 'Stopped';
   return (
-    <section className="project-screen">
-      <div className="project-heading">
-        <div className="project-heading-copy">
-          <p className="eyebrow">PROJECT / {project.name}</p>
-          <div className="project-title-row">
-            <span className={`large-status-dot${running ? ' live' : details ? ' stopped' : ' checking'}`} aria-hidden="true" />
-            <div className="project-title-copy">
-              <h1>{service.name}</h1>
-              <div className={`process-status${running ? ' live' : ''}`} role="status" aria-live="polite">
-                <strong>{processStateLabel}</strong>
-                <span>{running ? `PID ${details?.pid}` : processState === 'checking' ? 'Reading process state' : owner ? `${owner.name} holds the port` : 'No managed process'}</span>
-              </div>
-            </div>
-          </div>
-          <p className="project-folder-path" title={project.folder}>{displayFolderPath(project.folder)}</p>
-          <p className="run-command"><Icon name="terminal" /><span>Run command</span><code title={service.run}>{service.run}</code></p>
-        </div>
-        <div className="project-actions">
-          <button className="icon-button refresh-button" onClick={onRefresh} title="Refresh service" aria-label="Refresh service"><Icon name="refresh" /></button>
-          {!details ? (
-            <button className="secondary-button" disabled><Icon name="refresh" />Checking process…</button>
-          ) : running ? (
-            <button className="stop-button" onClick={onStop} disabled={isBusy}><Icon name="stop" />{busyAction === 'stop' || busyAction === 'terminate' ? 'Stopping…' : 'Stop service'}</button>
-          ) : (
-            <button className="run-button" onClick={onRun} disabled={isBusy}><Icon name="play" />{busyAction === 'run' ? 'Starting…' : 'Run service'}</button>
-          )}
-        </div>
-      </div>
-
-      <div className="project-meta" aria-label="Project details">
-        <div className="project-meta-item">
-          <span>PORT</span>
-          <strong>{service.port ? `:${service.port}` : 'Not configured'}</strong>
-          <small>{owner ? `${owner.name} · PID ${owner.pid}` : service.port ? 'Available' : 'Port check is not configured'}</small>
-        </div>
-        <div className="project-meta-item">
-          <span>WORKING DIRECTORY</span>
-          <code title={service.cwd}>{service.cwd}</code>
-        </div>
-      </div>
-
+    <div className="project-screen">
       <section className="log-panel" aria-label={`${project.name} ${service.name} log stream`}>
         <div className="log-panel-head">
           <div className="log-title"><Icon className="log-terminal-icon" name="terminal" /><div><h2>Output stream</h2><p>{details?.logPath ?? service.logPath}</p></div></div>
@@ -694,6 +697,209 @@ function ProjectScreen({
         </div>
         <div className="log-panel-foot"><span><i className={running ? 'foot-live' : ''} />{running ? 'STREAM ACTIVE' : 'STREAM IDLE'}</span><span>Live output · latest 250 lines</span></div>
       </section>
+
+      <section className="project-info" aria-label="Project information">
+        <div className="project-heading">
+          <div className="project-heading-copy">
+            <p className="eyebrow">PROJECT / {project.name}</p>
+            <div className="project-title-row">
+              <span className={`large-status-dot${running ? ' live' : details ? ' stopped' : ' checking'}`} aria-hidden="true" />
+              <div className="project-title-copy">
+                <h1>{service.name}</h1>
+                <div className={`process-status${running ? ' live' : ''}`} role="status" aria-live="polite">
+                  <strong>{processStateLabel}</strong>
+                  <span>{running ? `PID ${details?.pid}` : processState === 'checking' ? 'Reading process state' : owner ? `${owner.name} holds the port` : 'No managed process'}</span>
+                </div>
+              </div>
+            </div>
+            <p className="project-folder-path" title={project.folder}>{displayFolderPath(project.folder)}</p>
+            <p className="run-command"><Icon name="terminal" /><span>Run command</span><code title={service.run}>{service.run}</code></p>
+          </div>
+          <div className="project-actions">
+            <button className="icon-button refresh-button" onClick={onRefresh} title="Refresh service" aria-label="Refresh service"><Icon name="refresh" /></button>
+            {!details ? (
+              <button className="secondary-button" disabled><Icon name="refresh" />Checking process…</button>
+            ) : running ? (
+              <button className="stop-button" onClick={onStop} disabled={isBusy}><Icon name="stop" />{busyAction === 'stop' || busyAction === 'terminate' ? 'Stopping…' : 'Stop service'}</button>
+            ) : (
+              <button className="run-button" onClick={onRun} disabled={isBusy}><Icon name="play" />{busyAction === 'run' ? 'Starting…' : 'Run service'}</button>
+            )}
+          </div>
+        </div>
+
+        <div className="project-meta" aria-label="Project details">
+          <div className="project-meta-item">
+            <span>PORT</span>
+            <strong>{service.port ? `:${service.port}` : 'Not configured'}</strong>
+            <small>{owner ? `${owner.name} · PID ${owner.pid}` : service.port ? 'Available' : 'Port check is not configured'}</small>
+          </div>
+          <div className="project-meta-item">
+            <span>WORKING DIRECTORY</span>
+            <code title={service.cwd}>{service.cwd}</code>
+          </div>
+        </div>
+
+        <ProjectBranchControl key={project.id} project={project} />
+      </section>
+    </div>
+  );
+}
+
+function ProjectBranchControl({ project }: { project: Project }) {
+  const [branchState, setBranchState] = useState<GitBranchState | null>(null);
+  const [selectedBranch, setSelectedBranch] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [switching, setSwitching] = useState(false);
+  const [error, setError] = useState('');
+  const [status, setStatus] = useState('');
+  const requestVersion = useRef(0);
+  const projectId = project.id;
+
+  const refreshBranchState = useCallback(async () => {
+    const version = ++requestVersion.current;
+    setLoading(true);
+    setError('');
+    setStatus('');
+
+    try {
+      const next = await GetProjectGitBranchState(projectId);
+      if (requestVersion.current !== version) return;
+      setBranchState(next);
+      setSelectedBranch(next.currentBranch || next.branches[0] || '');
+    } catch (caught) {
+      if (requestVersion.current !== version) return;
+      setBranchState(null);
+      setSelectedBranch('');
+      setError(`Couldn't load Git branches: ${errorMessage(caught)}`);
+    } finally {
+      if (requestVersion.current === version) setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    setBranchState(null);
+    setSelectedBranch('');
+    setError('');
+    setStatus('');
+    setSwitching(false);
+    void refreshBranchState();
+    return () => { requestVersion.current += 1; };
+  }, [refreshBranchState]);
+
+  const branchOptions = branchState?.available
+    ? Array.from(new Set([branchState.currentBranch, ...branchState.branches].filter(Boolean)))
+    : [];
+  const canSwitch = Boolean(
+    branchState?.available
+    && !loading
+    && !switching
+    && selectedBranch
+    && selectedBranch !== branchState.currentBranch,
+  );
+
+  const switchBranch = async () => {
+    if (!branchState?.available || !canSwitch) return;
+
+    const targetBranch = selectedBranch;
+    const version = requestVersion.current;
+    setSwitching(true);
+    setError('');
+    setStatus(`Switching to ${targetBranch}…`);
+
+    try {
+      let switchedState: GitBranchState;
+      try {
+        switchedState = await SwitchProjectGitBranch(projectId, targetBranch);
+      } catch (caught) {
+        if (requestVersion.current !== version) return;
+        setError(`Could not switch to ${targetBranch}: ${errorMessage(caught)}`);
+        setStatus('');
+        return;
+      }
+
+      if (requestVersion.current !== version) return;
+      setBranchState(switchedState);
+      setSelectedBranch(switchedState.currentBranch || switchedState.branches[0] || '');
+
+      try {
+        const refreshed = await GetProjectGitBranchState(projectId);
+        if (requestVersion.current !== version) return;
+        setBranchState(refreshed);
+        setSelectedBranch(refreshed.currentBranch || refreshed.branches[0] || '');
+        setStatus(`Switched to ${refreshed.currentBranch || switchedState.currentBranch || targetBranch}.`);
+      } catch (caught) {
+        if (requestVersion.current !== version) return;
+        setError(`Switched to ${switchedState.currentBranch || targetBranch}, but couldn't refresh branch details: ${errorMessage(caught)}`);
+        setStatus('');
+      }
+    } finally {
+      if (requestVersion.current === version) setSwitching(false);
+    }
+  };
+
+  return (
+    <section className="branch-control" aria-labelledby="branch-control-title">
+      <div className="branch-control-summary">
+        <div className="branch-control-title-group">
+          <p className="eyebrow">PROJECT REPOSITORY</p>
+          <h2 id="branch-control-title">Git branch</h2>
+        </div>
+        {branchState?.available && branchState.repositoryRoot && (
+          <p className="branch-repository" title={branchState.repositoryRoot}>
+            <span>Repository</span>
+            <code>{displayFolderPath(branchState.repositoryRoot)}</code>
+          </p>
+        )}
+      </div>
+
+      {loading ? (
+        <p className="branch-message" role="status" aria-live="polite">Loading local branches…</p>
+      ) : branchState && !branchState.available ? (
+        <p className="branch-message" role="status" aria-live="polite">
+          Branch switching is unavailable because this folder is outside a Git working tree.
+        </p>
+      ) : branchState ? (
+        <>
+          <div className="branch-control-row">
+            <label htmlFor="project-branch-select">Switch to</label>
+            <select
+              id="project-branch-select"
+              className="branch-select"
+              value={selectedBranch}
+              onChange={(event) => {
+                setSelectedBranch(event.target.value);
+                setError('');
+                setStatus('');
+              }}
+              disabled={loading || switching || !branchOptions.length}
+              aria-describedby="project-branch-feedback"
+            >
+              {!branchOptions.length && <option value="">No local branches found</option>}
+              {branchOptions.map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+            </select>
+            <button className="secondary-button branch-switch-button" type="button" onClick={() => void switchBranch()} disabled={!canSwitch}>
+              {switching ? 'Switching…' : 'Switch branch'}
+            </button>
+          </div>
+          <p
+            id="project-branch-feedback"
+            className={`branch-message${error ? ' branch-message-error' : status ? ' branch-message-success' : ''}`}
+            role={error ? 'alert' : 'status'}
+            aria-live={error ? 'assertive' : 'polite'}
+          >
+            {error || status || (branchState.currentBranch ? `Current branch: ${branchState.currentBranch}` : 'No branch is currently checked out.')}
+          </p>
+        </>
+      ) : (
+        <div className="branch-load-error">
+          <p className="branch-message branch-message-error" role="alert" aria-live="assertive">
+            {error || "Branch information couldn't be loaded."}
+          </p>
+          <button className="secondary-button branch-retry-button" type="button" onClick={() => void refreshBranchState()}>
+            Retry branch status
+          </button>
+        </div>
+      )}
     </section>
   );
 }
