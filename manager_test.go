@@ -132,7 +132,7 @@ func TestAddedConfiguredProjectsRestoreAfterRestart(t *testing.T) {
 	}
 }
 
-func TestNewManagerPersistsConfiguredProjectAcrossRestarts(t *testing.T) {
+func TestProjectManagerPersistsConfiguredProjectAcrossRestarts(t *testing.T) {
 	userConfigDir := t.TempDir()
 	t.Setenv("APPDATA", userConfigDir)
 
@@ -141,7 +141,7 @@ func TestNewManagerPersistsConfiguredProjectAcrossRestarts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	firstLaunch := NewManager()
+	firstLaunch := NewProjectManager()
 	state, err := firstLaunch.LoadFolder(folder)
 	if err != nil {
 		t.Fatal(err)
@@ -162,16 +162,16 @@ func TestNewManagerPersistsConfiguredProjectAcrossRestarts(t *testing.T) {
 		t.Fatalf("saved folders = %v, want only %q", savedFolders, folder)
 	}
 
-	secondLaunch := NewManager()
-	state = secondLaunch.Workspace()
+	secondLaunch := NewProjectManager()
+	state = secondLaunch.GetWorkspace()
 	if len(state.Projects) != 1 || state.Projects[0].Folder != folder {
 		t.Fatalf("projects after restarting manager = %#v, want %q", state.Projects, folder)
 	}
 	if len(state.Projects[0].Services) != 1 || state.Projects[0].Services[0].Name != "backend" {
 		t.Fatalf("restored services = %#v, want backend", state.Projects[0].Services)
 	}
-	if len(secondLaunch.running) != 0 {
-		t.Fatalf("restoring saved project started processes: %#v", secondLaunch.running)
+	if len(secondLaunch.manager.running) != 0 {
+		t.Fatalf("restoring saved project started processes: %#v", secondLaunch.manager.running)
 	}
 }
 
