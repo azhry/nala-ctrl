@@ -132,6 +132,49 @@ func TestAddedConfiguredProjectsRestoreAfterRestart(t *testing.T) {
 	}
 }
 
+func TestNewManagerPersistsConfiguredProjectAcrossRestarts(t *testing.T) {
+	userConfigDir := t.TempDir()
+	t.Setenv("APPDATA", userConfigDir)
+
+	folder := projectTestFolder(t, "default-registry-project")
+	if err := os.WriteFile(filepath.Join(folder, configFilename), []byte("projects:\n  backend:\n    cwd: .\n    run: go run .\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	firstLaunch := NewManager()
+	state, err := firstLaunch.LoadFolder(folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Projects) != 1 || state.Projects[0].Folder != folder {
+		t.Fatalf("projects after adding folder = %#v, want %q", state.Projects, folder)
+	}
+
+	registryPath, err := defaultProjectFolderRegistryPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedFolders, err := readProjectFolderRegistry(registryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(savedFolders) != 1 || savedFolders[0] != folder {
+		t.Fatalf("saved folders = %v, want only %q", savedFolders, folder)
+	}
+
+	secondLaunch := NewManager()
+	state = secondLaunch.Workspace()
+	if len(state.Projects) != 1 || state.Projects[0].Folder != folder {
+		t.Fatalf("projects after restarting manager = %#v, want %q", state.Projects, folder)
+	}
+	if len(state.Projects[0].Services) != 1 || state.Projects[0].Services[0].Name != "backend" {
+		t.Fatalf("restored services = %#v, want backend", state.Projects[0].Services)
+	}
+	if len(secondLaunch.running) != 0 {
+		t.Fatalf("restoring saved project started processes: %#v", secondLaunch.running)
+	}
+}
+
 func TestRestoreSkipsMissingProjectAndKeepsItsSavedPath(t *testing.T) {
 	registryPath := filepath.Join(t.TempDir(), "user-config", "project-folders.json")
 	validFolder := projectTestFolder(t, "valid-project")
