@@ -636,47 +636,7 @@ function ProjectScreen({
   const processState = !details ? 'checking' : busyAction === 'run' ? 'starting' : busyAction === 'stop' || busyAction === 'terminate' ? 'stopping' : running ? 'running' : 'stopped';
   const processStateLabel = processState === 'checking' ? 'Checking process' : processState === 'starting' ? 'Starting process' : processState === 'stopping' ? 'Stopping process' : running ? 'Running' : 'Stopped';
   return (
-    <section className="project-screen">
-      <div className="project-heading">
-        <div className="project-heading-copy">
-          <p className="eyebrow">PROJECT / {project.name}</p>
-          <div className="project-title-row">
-            <span className={`large-status-dot${running ? ' live' : details ? ' stopped' : ' checking'}`} aria-hidden="true" />
-            <div className="project-title-copy">
-              <h1>{service.name}</h1>
-              <div className={`process-status${running ? ' live' : ''}`} role="status" aria-live="polite">
-                <strong>{processStateLabel}</strong>
-                <span>{running ? `PID ${details?.pid}` : processState === 'checking' ? 'Reading process state' : owner ? `${owner.name} holds the port` : 'No managed process'}</span>
-              </div>
-            </div>
-          </div>
-          <p className="project-folder-path" title={project.folder}>{displayFolderPath(project.folder)}</p>
-          <p className="run-command"><Icon name="terminal" /><span>Run command</span><code title={service.run}>{service.run}</code></p>
-        </div>
-        <div className="project-actions">
-          <button className="icon-button refresh-button" onClick={onRefresh} title="Refresh service" aria-label="Refresh service"><Icon name="refresh" /></button>
-          {!details ? (
-            <button className="secondary-button" disabled><Icon name="refresh" />Checking process…</button>
-          ) : running ? (
-            <button className="stop-button" onClick={onStop} disabled={isBusy}><Icon name="stop" />{busyAction === 'stop' || busyAction === 'terminate' ? 'Stopping…' : 'Stop service'}</button>
-          ) : (
-            <button className="run-button" onClick={onRun} disabled={isBusy}><Icon name="play" />{busyAction === 'run' ? 'Starting…' : 'Run service'}</button>
-          )}
-        </div>
-      </div>
-
-      <div className="project-meta" aria-label="Project details">
-        <div className="project-meta-item">
-          <span>PORT</span>
-          <strong>{service.port ? `:${service.port}` : 'Not configured'}</strong>
-          <small>{owner ? `${owner.name} · PID ${owner.pid}` : service.port ? 'Available' : 'Port check is not configured'}</small>
-        </div>
-        <div className="project-meta-item">
-          <span>WORKING DIRECTORY</span>
-          <code title={service.cwd}>{service.cwd}</code>
-        </div>
-      </div>
-
+    <div className="project-screen">
       <section className="log-panel" aria-label={`${project.name} ${service.name} log stream`}>
         <div className="log-panel-head">
           <div className="log-title"><Icon className="log-terminal-icon" name="terminal" /><div><h2>Output stream</h2><p>{details?.logPath ?? service.logPath}</p></div></div>
@@ -694,7 +654,49 @@ function ProjectScreen({
         </div>
         <div className="log-panel-foot"><span><i className={running ? 'foot-live' : ''} />{running ? 'STREAM ACTIVE' : 'STREAM IDLE'}</span><span>Live output · latest 250 lines</span></div>
       </section>
-    </section>
+
+      <section className="project-info" aria-label="Project information">
+        <div className="project-heading">
+          <div className="project-heading-copy">
+            <p className="eyebrow">PROJECT / {project.name}</p>
+            <div className="project-title-row">
+              <span className={`large-status-dot${running ? ' live' : details ? ' stopped' : ' checking'}`} aria-hidden="true" />
+              <div className="project-title-copy">
+                <h1>{service.name}</h1>
+                <div className={`process-status${running ? ' live' : ''}`} role="status" aria-live="polite">
+                  <strong>{processStateLabel}</strong>
+                  <span>{running ? `PID ${details?.pid}` : processState === 'checking' ? 'Reading process state' : owner ? `${owner.name} holds the port` : 'No managed process'}</span>
+                </div>
+              </div>
+            </div>
+            <p className="project-folder-path" title={project.folder}>{displayFolderPath(project.folder)}</p>
+            <p className="run-command"><Icon name="terminal" /><span>Run command</span><code title={service.run}>{service.run}</code></p>
+          </div>
+          <div className="project-actions">
+            <button className="icon-button refresh-button" onClick={onRefresh} title="Refresh service" aria-label="Refresh service"><Icon name="refresh" /></button>
+            {!details ? (
+              <button className="secondary-button" disabled><Icon name="refresh" />Checking process…</button>
+            ) : running ? (
+              <button className="stop-button" onClick={onStop} disabled={isBusy}><Icon name="stop" />{busyAction === 'stop' || busyAction === 'terminate' ? 'Stopping…' : 'Stop service'}</button>
+            ) : (
+              <button className="run-button" onClick={onRun} disabled={isBusy}><Icon name="play" />{busyAction === 'run' ? 'Starting…' : 'Run service'}</button>
+            )}
+          </div>
+        </div>
+
+        <div className="project-meta" aria-label="Project details">
+          <div className="project-meta-item">
+            <span>PORT</span>
+            <strong>{service.port ? `:${service.port}` : 'Not configured'}</strong>
+            <small>{owner ? `${owner.name} · PID ${owner.pid}` : service.port ? 'Available' : 'Port check is not configured'}</small>
+          </div>
+          <div className="project-meta-item">
+            <span>WORKING DIRECTORY</span>
+            <code title={service.cwd}>{service.cwd}</code>
+          </div>
+        </div>
+      </section>
+    </div>
   );
 }
 
