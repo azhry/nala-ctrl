@@ -26,6 +26,44 @@ projects:
 
 Each folder you add contributes one project group to the list. Its services have separate status, Run/Stop controls, and log streams. Switching between projects or services does not stop running commands. Closing the app stops every process it started.
 
+## Headless agent API
+
+The console binary also runs a local JSON API without opening the Wails desktop UI. From a source checkout, build the embedded frontend assets and then the console binary:
+
+```bash
+npm --prefix frontend ci
+npm --prefix frontend run build
+go build -o nala-ctrl .
+```
+
+Start the API in a terminal and keep it running:
+
+```bash
+./nala-ctrl api serve --listen 127.0.0.1:47653
+```
+
+On Windows, use `nala-ctrl.exe` (or `./nala-ctrl.exe` in Git Bash). Keep the API process running while agents use it. `nala-ctrl api token-file` prints the path to a private curl config containing the bearer header; pass that file to `curl --config` and do not print or commit its contents:
+
+```bash
+token_file="$(./nala-ctrl api token-file)"
+curl --config "$token_file" --silent --show-error http://127.0.0.1:47653/v1/health
+```
+
+The API accepts requests only from loopback clients, rejects browser-origin requests, and requires that bearer header on every route. It restores the explicitly registered `nala.yml` folders from the user's Nala Ctrl config directory. Use `POST /v1/projects/load` only to add a project folder that is not already registered.
+
+| Request | Purpose |
+| --- | --- |
+| `GET /v1/health` | Confirm that the authenticated API is responding. |
+| `GET /v1/workspace` | List registered projects and configured services. |
+| `POST /v1/projects/load` with `{"folder":"/path/to/project"}` | Register a project folder containing `nala.yml`. |
+| `GET /v1/services/{serviceID}` | Read service configuration and API-managed run state. |
+| `GET /v1/services/{serviceID}/logs?limit=N` | Read the latest log lines; the default is 100 and the maximum is 250. |
+| `POST /v1/services/{serviceID}/run` | Start that configured service through this API process. |
+| `POST /v1/services/{serviceID}/stop` | Stop that service only when this API process started it. |
+| `GET /v1/projects/git-branch?projectId=<url-encoded-path>` | Read the registered project root's current branch and local branch names. |
+
+Workspace and service responses omit configured `run` commands and environment values. The workspace response's `hasWarnings` flag signals that saved project folders could not all be read or persisted; it omits diagnostic details that might contain private configuration. A service's `running` value reflects only processes started by this API process; `portInUse` reports whether its configured port is occupied. The branch route describes the current branch of the registered project root and does not identify the branch or worktree used when a process started. Logs may contain secrets, so request them only for diagnosis and redact sensitive values before reporting. The API has no route to switch branches or terminate a port owner. Stopping the API with Ctrl-C stops processes that API instance started.
+
 ## Development
 
 Requirements: Go 1.26 or newer, Node.js 20.19+ or 22.12+, npm, and the platform dependencies required by Wails v2. See the [Wails installation guide](https://wails.io/docs/gettingstarted/installation) for the native desktop dependencies for your operating system.

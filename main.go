@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"os"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -13,6 +14,10 @@ import (
 var assets embed.FS
 
 func main() {
+	if handled, exitCode := runHeadlessCLI(os.Args[1:], os.Stdout, os.Stderr); handled {
+		os.Exit(exitCode)
+	}
+
 	manager := NewProjectManager()
 
 	err := wails.Run(&options.App{
