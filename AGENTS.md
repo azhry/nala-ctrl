@@ -14,6 +14,7 @@
 
 ## Execution discipline
 
+- Keep implementation within the requested and documented contract. Do not add speculative authentication or token handling, fallback behavior, or compatibility layers; remove code made obsolete by an in-scope contract change.
 - Treat the user's requested outcome and scope as the contract. Complete required workflow gates, but do not add unrelated review, refactoring, cleanup, generated artifacts, or product changes. When the user has approved the full task, proceed end-to-end without repeating optional questions; ask only when a missing decision would materially change scope or a safety boundary requires it.
 - Keep updates outcome-first, concise, and plain-language. Report only task-relevant progress, blockers, decisions, and evidence; avoid jargon and long narration.
 - Write manual verification directly in the issue or PR description as short, independently pasteable Bash steps. For HTTP behavior, use one simple request per step and a concise expected response. Keep setup separate, do not create or hand off a PowerShell/Bash verification script, helper script, or bulk runner, and never present an unrun response as observed. Use `.agents/skills/manual-test-verification/SKILL.md` and its linked reference for the full context-first, sanitization, immediate-status, and classification contract.
