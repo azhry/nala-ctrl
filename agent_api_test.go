@@ -13,21 +13,20 @@ import (
 	"time"
 )
 
-func TestAgentAPIRequiresBearerAndLoopback(t *testing.T) {
+func TestAgentAPIIsUnauthenticatedAndLoopbackOnly(t *testing.T) {
 	manager := newTestManager(t)
-	handler := newAgentAPIHandler(manager, "agent-test-token")
+	handler := newAgentAPIHandler(manager)
 
 	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:47653/v1/health", nil)
 	request.RemoteAddr = "127.0.0.1:12345"
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated status = %d, want %d", response.Code, http.StatusUnauthorized)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `{"ok":true}`) {
+		t.Fatalf("unauthenticated loopback health status = %d: %s", response.Code, response.Body.String())
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "http://127.0.0.1:47653/v1/health", nil)
 	request.RemoteAddr = "192.0.2.10:12345"
-	request.Header.Set("Authorization", "Bearer agent-test-token")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden {
@@ -36,7 +35,6 @@ func TestAgentAPIRequiresBearerAndLoopback(t *testing.T) {
 
 	request = httptest.NewRequest(http.MethodGet, "http://example.test/v1/health", nil)
 	request.RemoteAddr = "127.0.0.1:12345"
-	request.Header.Set("Authorization", "Bearer agent-test-token")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden {
@@ -45,7 +43,6 @@ func TestAgentAPIRequiresBearerAndLoopback(t *testing.T) {
 
 	request = httptest.NewRequest(http.MethodGet, "http://127.0.0.1:47653/v1/health", nil)
 	request.RemoteAddr = "127.0.0.1:12345"
-	request.Header.Set("Authorization", "Bearer agent-test-token")
 	request.Header.Set("Origin", "http://localhost")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -64,7 +61,7 @@ func TestAgentAPIWorkspaceOmitsConfiguredRunCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := newAgentAPIHandler(manager, "agent-test-token")
+	handler := newAgentAPIHandler(manager)
 	response := agentAPIRequest(t, handler, http.MethodGet, "/v1/workspace", "", nil)
 	if response.Code != http.StatusOK {
 		t.Fatalf("workspace status = %d: %s", response.Code, response.Body.String())
@@ -88,7 +85,7 @@ func TestAgentAPIProjectLoadRegistersOnlyExplicitFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := newTestManager(t)
-	handler := newAgentAPIHandler(manager, "agent-test-token")
+	handler := newAgentAPIHandler(manager)
 	headers := make(http.Header)
 	headers.Set("Content-Type", "application/json")
 	requestBody, err := json.Marshal(map[string]string{"folder": folder})
@@ -126,7 +123,7 @@ func TestAgentAPIFlagsWorkspacePersistenceWarningsWithoutExposingDetails(t *test
 		t.Fatal(err)
 	}
 	manager := newManagerWithRegistryPath(filepath.Join(registryParent, "project-folders.json"))
-	handler := newAgentAPIHandler(manager, "agent-test-token")
+	handler := newAgentAPIHandler(manager)
 	headers := make(http.Header)
 	headers.Set("Content-Type", "application/json")
 	requestBody, err := json.Marshal(map[string]string{"folder": folder})
@@ -164,7 +161,7 @@ func TestAgentAPIRunStopAndBoundedLogs(t *testing.T) {
 	if err := os.WriteFile(service.LogPath, []byte("one\ntwo\nthree\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	managerHandler := newAgentAPIHandler(manager, "agent-test-token")
+	managerHandler := newAgentAPIHandler(manager)
 	t.Cleanup(func() { _ = manager.StopAll() })
 
 	path := "/v1/services/" + url.PathEscape(service.ID)
@@ -231,7 +228,7 @@ func TestAgentAPIRunStopAndBoundedLogs(t *testing.T) {
 
 func TestAgentAPIBranchLookupUsesRegisteredProjectPath(t *testing.T) {
 	manager, project, _ := gitTestProject(t)
-	handler := newAgentAPIHandler(manager, "agent-test-token")
+	handler := newAgentAPIHandler(manager)
 	query := url.Values{"projectId": []string{project.ID}}
 	response := agentAPIRequest(t, handler, http.MethodGet, "/v1/projects/git-branch?"+query.Encode(), "", nil)
 	if response.Code != http.StatusOK {
@@ -243,60 +240,6 @@ func TestAgentAPIBranchLookupUsesRegisteredProjectPath(t *testing.T) {
 	}
 	if !state.Available || state.CurrentBranch != "main" {
 		t.Fatalf("branch response = %#v, want registered project root on main", state)
-	}
-}
-
-func TestAgentAPITokenFileIsReusableWithoutPrintingToken(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "Nala Ctrl", agentAPITokenFilename)
-	first, err := ensureAgentAPITokenFile(path)
-	if err != nil {
-		t.Fatal("could not create API token file")
-	}
-	firstContents, err := os.ReadFile(first)
-	if err != nil {
-		t.Fatal(err)
-	}
-	firstToken, err := parseAgentAPITokenFile(firstContents)
-	if err != nil {
-		t.Fatal("created API token file could not be parsed")
-	}
-	second, err := ensureAgentAPITokenFile(path)
-	if err != nil || second != first {
-		t.Fatalf("reused token file path = %q, error=%v", second, err)
-	}
-	secondContents, err := os.ReadFile(second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	secondToken, err := parseAgentAPITokenFile(secondContents)
-	if err != nil || firstToken != secondToken {
-		t.Fatal("existing API token was not reused")
-	}
-}
-
-func TestAgentAPITokenFileCLIPrintsOnlyItsPath(t *testing.T) {
-	configDir := t.TempDir()
-	t.Setenv("APPDATA", configDir)
-	t.Setenv("XDG_CONFIG_HOME", configDir)
-	var stdout, stderr strings.Builder
-	handled, exitCode := runHeadlessCLI([]string{"api", "token-file"}, &stdout, &stderr)
-	if !handled || exitCode != 0 || stderr.Len() != 0 {
-		t.Fatalf("token-file CLI handled=%t exit=%d stderr=%q", handled, exitCode, stderr.String())
-	}
-	path := strings.TrimSpace(stdout.String())
-	if path == "" || !filepath.IsAbs(path) {
-		t.Fatalf("token-file CLI did not print an absolute path: %q", stdout.String())
-	}
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	token, err := parseAgentAPITokenFile(contents)
-	if err != nil {
-		t.Fatal("token-file CLI created an invalid curl config")
-	}
-	if strings.Contains(stdout.String(), token) {
-		t.Fatal("token-file CLI printed the bearer token")
 	}
 }
 
@@ -321,7 +264,6 @@ func agentAPIRequest(t *testing.T, handler http.Handler, method, target, body st
 	}
 	request := httptest.NewRequest(method, "http://127.0.0.1:47653"+target, requestBody)
 	request.RemoteAddr = "127.0.0.1:12345"
-	request.Header.Set("Authorization", "Bearer agent-test-token")
 	if header != nil {
 		for key, values := range header {
 			for _, value := range values {

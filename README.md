@@ -42,18 +42,17 @@ Start the API in a terminal and keep it running:
 ./nala-ctrl api serve --listen 127.0.0.1:47653
 ```
 
-On Windows, use `nala-ctrl.exe` (or `./nala-ctrl.exe` in Git Bash). Keep the API process running while agents use it. `nala-ctrl api token-file` prints the path to a private curl config containing the bearer header; pass that file to `curl --config` and do not print or commit its contents:
+On Windows, use `nala-ctrl.exe` (or `./nala-ctrl.exe` in Git Bash). Keep the API process running while agents use it. Requests to this loopback-only API do not require a token or authentication header:
 
 ```bash
-token_file="$(./nala-ctrl api token-file)"
-curl --config "$token_file" --silent --show-error http://127.0.0.1:47653/v1/health
+curl --silent --show-error --fail http://127.0.0.1:47653/v1/health
 ```
 
-The API accepts requests only from loopback clients, rejects browser-origin requests, and requires that bearer header on every route. It restores the explicitly registered `nala.yml` folders from the user's Nala Ctrl config directory. Use `POST /v1/projects/load` only to add a project folder that is not already registered.
+The API accepts requests only from loopback clients and rejects browser-origin requests. It restores the explicitly registered `nala.yml` folders from the user's Nala Ctrl config directory. Use `POST /v1/projects/load` only to add a project folder that is not already registered.
 
 | Request | Purpose |
 | --- | --- |
-| `GET /v1/health` | Confirm that the authenticated API is responding. |
+| `GET /v1/health` | Confirm that the API is responding. |
 | `GET /v1/workspace` | List registered projects and configured services. |
 | `POST /v1/projects/load` with `{"folder":"/path/to/project"}` | Register a project folder containing `nala.yml`. |
 | `GET /v1/services/{serviceID}` | Read service configuration and API-managed run state. |

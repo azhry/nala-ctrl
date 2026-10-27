@@ -2,9 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/subtle"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -15,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -24,7 +20,6 @@ import (
 
 const (
 	defaultAgentAPIListen = "127.0.0.1:47653"
-	agentAPITokenFilename = "agent-api-token.curlrc"
 	maxAgentAPIRequest    = 1 << 20
 	defaultAgentLogLimit  = 100
 	maxAgentLogLimit      = 250
@@ -82,117 +77,15 @@ type agentAPIErrorDetail struct {
 	Message string `json:"message"`
 }
 
-func defaultAgentAPITokenPath() (string, error) {
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		return "", fmt.Errorf("find user config folder: %w", err)
-	}
-	if strings.TrimSpace(configDir) == "" {
-		return "", errors.New("user config folder is empty")
-	}
-	return filepath.Join(configDir, "Nala Ctrl", agentAPITokenFilename), nil
-}
-
-// ensureAgentAPITokenFile writes a curl-compatible config containing only the
-// bearer header. That lets agents pass the file to curl without putting the
-// secret in a command argument or terminal output.
-func ensureAgentAPITokenFile(path string) (string, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return "", fmt.Errorf("create API config folder: %w", err)
-	}
-	if data, err := os.ReadFile(path); err == nil {
-		if err := os.Chmod(path, 0600); err != nil {
-			return "", fmt.Errorf("restrict API token file permissions: %w", err)
-		}
-		if _, err := parseAgentAPITokenFile(data); err != nil {
-			return "", err
-		}
-		return path, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("read API token file: %w", err)
-	}
-
-	secret := make([]byte, 32)
-	if _, err := rand.Read(secret); err != nil {
-		return "", fmt.Errorf("generate API token: %w", err)
-	}
-	token := base64.RawURLEncoding.EncodeToString(secret)
-	contents := []byte(fmt.Sprintf("header = \"Authorization: Bearer %s\"\n", token))
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if errors.Is(err, os.ErrExist) {
-		data, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return "", fmt.Errorf("read API token file: %w", readErr)
-		}
-		if _, parseErr := parseAgentAPITokenFile(data); parseErr != nil {
-			return "", parseErr
-		}
-		return path, nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("create API token file: %w", err)
-	}
-	if err := file.Chmod(0600); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", fmt.Errorf("restrict API token file permissions: %w", err)
-	}
-	if _, err := file.Write(contents); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", fmt.Errorf("write API token file: %w", err)
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", fmt.Errorf("sync API token file: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
-		return "", fmt.Errorf("close API token file: %w", err)
-	}
-	return path, nil
-}
-
-func parseAgentAPITokenFile(contents []byte) (string, error) {
-	line := strings.TrimSuffix(string(contents), "\n")
-	line = strings.TrimSuffix(line, "\r")
-	const prefix = `header = "Authorization: Bearer `
-	if !strings.HasPrefix(line, prefix) || !strings.HasSuffix(line, `"`) || strings.Contains(line, "\n") || strings.Contains(line, "\r") {
-		return "", errors.New("API token file is invalid; remove it and run api token-file again")
-	}
-	token := strings.TrimSuffix(strings.TrimPrefix(line, prefix), `"`)
-	decoded, err := base64.RawURLEncoding.DecodeString(token)
-	if err != nil || len(decoded) != 32 {
-		return "", errors.New("API token file is invalid; remove it and run api token-file again")
-	}
-	return token, nil
-}
-
 func runHeadlessCLI(args []string, stdout, stderr io.Writer) (handled bool, exitCode int) {
 	if len(args) == 0 || args[0] != "api" {
 		return false, 0
 	}
 	if len(args) < 2 {
-		fmt.Fprintln(stderr, "usage: nala-ctrl api <serve|token-file>")
+		fmt.Fprintln(stderr, "usage: nala-ctrl api serve")
 		return true, 2
 	}
 	switch args[1] {
-	case "token-file":
-		if len(args) != 2 {
-			fmt.Fprintln(stderr, "usage: nala-ctrl api token-file")
-			return true, 2
-		}
-		path, err := defaultAgentAPITokenPath()
-		if err == nil {
-			path, err = ensureAgentAPITokenFile(path)
-		}
-		if err != nil {
-			fmt.Fprintln(stderr, "nala-ctrl: could not prepare the local API token file")
-			return true, 1
-		}
-		fmt.Fprintln(stdout, path)
-		return true, 0
 	case "serve":
 		flags := flag.NewFlagSet("nala-ctrl api serve", flag.ContinueOnError)
 		flags.SetOutput(stderr)
@@ -211,7 +104,7 @@ func runHeadlessCLI(args []string, stdout, stderr io.Writer) (handled bool, exit
 		}
 		return true, 0
 	default:
-		fmt.Fprintln(stderr, "usage: nala-ctrl api <serve|token-file>")
+		fmt.Fprintln(stderr, "usage: nala-ctrl api serve")
 		return true, 2
 	}
 }
@@ -250,22 +143,6 @@ func serveAgentAPI(address string, stdout io.Writer) error {
 	if err := validateAgentAPIListenAddress(address); err != nil {
 		return err
 	}
-	path, err := defaultAgentAPITokenPath()
-	if err != nil {
-		return errors.New("could not locate the local API token file")
-	}
-	path, err = ensureAgentAPITokenFile(path)
-	if err != nil {
-		return errors.New("could not prepare the local API token file")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return errors.New("could not read the local API token file")
-	}
-	token, err := parseAgentAPITokenFile(data)
-	if err != nil {
-		return err
-	}
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", address, err)
@@ -273,13 +150,13 @@ func serveAgentAPI(address string, stdout io.Writer) error {
 	manager := NewManager()
 	manager.Workspace()
 	server := &http.Server{
-		Handler:           newAgentAPIHandler(manager, token),
+		Handler:           newAgentAPIHandler(manager),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    16 * 1024,
 		ErrorLog:          log.New(io.Discard, "", 0),
 	}
-	fmt.Fprintf(stdout, "Nala Ctrl agent API listening on http://%s\nToken file: %s\n", listener.Addr(), path)
+	fmt.Fprintf(stdout, "Nala Ctrl agent API listening on http://%s\n", listener.Addr())
 
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
@@ -306,7 +183,7 @@ func serveAgentAPI(address string, stdout io.Writer) error {
 
 var errAgentServiceNotFound = errors.New("service not found")
 
-func newAgentAPIHandler(manager *Manager, token string) http.Handler {
+func newAgentAPIHandler(manager *Manager) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeAgentJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -426,12 +303,6 @@ func newAgentAPIHandler(manager *Manager, token string) http.Handler {
 		}
 		if !isLoopbackAddress(r.RemoteAddr) || !isLoopbackHost(r.Host) {
 			writeAgentAPIError(w, http.StatusForbidden, "loopback_only", "the API accepts loopback clients only")
-			return
-		}
-		authorization := r.Header.Get("Authorization")
-		const bearerPrefix = "Bearer "
-		if !strings.HasPrefix(authorization, bearerPrefix) || subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(authorization, bearerPrefix)), []byte(token)) != 1 {
-			writeAgentAPIError(w, http.StatusUnauthorized, "unauthorized", "a valid bearer token is required")
 			return
 		}
 		mux.ServeHTTP(w, r)
