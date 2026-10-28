@@ -24,6 +24,16 @@ Nala Ctrl is a local desktop process manager. The Go application and process man
 - Go sends `project:state` events with project and service identities when a managed command starts or exits. The active view refreshes its running state after matching events; Run, Stop, and confirmed takeover also refresh details after the action completes.
 - Project detail snapshots contain at most 250 recent lines and read at most the latest 512 KiB of the log file.
 
+## Headless agent API
+
+- `nala-ctrl api serve --listen 127.0.0.1:47653` runs a JSON HTTP API before Wails starts; it can be used from a console build or `go run .`. Send requests directly to its loopback address with no token or authentication header.
+- The API listener accepts only a loopback IP. Its middleware rejects browser `Origin` requests and non-loopback `Host` values, and sends no CORS headers.
+- `GET /v1/workspace` and `GET /v1/services/{serviceID}` use dedicated API DTOs that omit `run`, environment values, and log lines. The workspace response exposes only a `hasWarnings` boolean, not diagnostic text that could contain private configuration. `GET /v1/services/{serviceID}/logs?limit=N` explicitly reads a bounded tail (100 by default, at most 250 lines, backed by the existing 512 KiB read cap). Logs may contain secrets.
+- `POST /v1/projects/load` explicitly adds a folder through the existing registry. Run and stop routes resolve only loaded service IDs and call this API instance's `Manager`; there is no API route for arbitrary PID operations or port-owner termination.
+- The API process owns a separate `Manager` from the desktop app. Its `running` field is authoritative only for child processes started by that API process. `portInUse` can show a configured port is occupied by any process, but does not identify or control that process. API shutdown stops only processes owned by its manager.
+- `GET /v1/projects/git-branch?projectId=<url-encoded-absolute-folder>` reports the current branch for the registered project folder's Git root. It does not report a process-start branch and cannot switch branches.
+- The API returns generic operation errors and never includes a configured command in responses.
+
 ## Key files
 
 | Path | Responsibility |
@@ -33,6 +43,7 @@ Nala Ctrl is a local desktop process manager. The Go application and process man
 | `ports.go`, `process_windows.go`, `process_unix.go` | Listening socket ownership and platform process control. |
 | `log_writer.go` | Append output and emit line/state event types. |
 | `app.go` | Wails-bound app methods and runtime event wiring. |
+| `agent_api.go` | Loopback-only HTTP routes, safe agent DTOs, and headless CLI dispatch. |
 | `frontend/src/App.tsx` | Workspace, project status, run/stop, conflict confirmation, and log display. |
 
 ## Verification
