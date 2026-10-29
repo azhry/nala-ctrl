@@ -26,6 +26,10 @@ export function LoadFolder(arg1) {
   return window['go']['main']['ProjectManager']['LoadFolder'](arg1);
 }
 
+export function RestartDocker() {
+  return window['go']['main']['ProjectManager']['RestartDocker']();
+}
+
 export function RunProject(arg1) {
   return window['go']['main']['ProjectManager']['RunProject'](arg1);
 }

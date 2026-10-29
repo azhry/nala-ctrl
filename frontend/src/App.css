@@ -231,6 +231,8 @@
 .secondary-button { color:#607066; border:1px solid #d6e0d6; border-radius:6px; background:#f8faf7; }
 .secondary-button:hover { color:#405a48; border-color:#b8cbb9; background:#fff; }
 .secondary-button svg { width:14px; height:14px; }
+.docker-restart-button { min-height:44px; flex:0 0 auto; padding:0 11px; white-space:nowrap; }
+.docker-restart-button svg { width:14px; height:14px; }
 .dialog-scrim { position:fixed; z-index:5; inset:0; display:grid; padding:20px; place-items:center; background:rgba(16,26,20,.47); backdrop-filter:blur(3px); }
 .conflict-dialog { width:min(100%,450px); padding:24px 25px 20px; border:1px solid #d9e2d8; border-radius:12px; background:#f7f9f5; box-shadow:0 24px 70px rgba(12,24,16,.28); }
 .dialog-topline { display:flex; align-items:center; justify-content:space-between; margin-bottom:18px; }

@@ -14,6 +14,8 @@ export function GetWorkspace():Promise<main.WorkspaceState>;
 
 export function LoadFolder(arg1:string):Promise<main.WorkspaceState>;
 
+export function RestartDocker():Promise<void>;
+
 export function RunProject(arg1:string):Promise<main.RunResult>;
 
 export function StopProject(arg1:string):Promise<void>;

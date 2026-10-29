@@ -95,6 +95,8 @@ Run the desktop app in development mode from the repository root with `wails dev
 wails dev
 ```
 
+The desktop app includes a **Restart Docker** action for local Docker Desktop recovery. It restarts Docker Desktop and waits for a local Desktop engine to respond. Restarting interrupts running containers. This action requires the Docker Desktop CLI (`docker desktop`) to be available on `PATH`; it does not reset images, containers, or volumes.
+
 Build a native application package:
 
 ```bash

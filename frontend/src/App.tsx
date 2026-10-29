@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, FormEvent, RefObject, SetStateAction } from 'react';
-import { ChooseFolder, CreateConfig, GetProjectDetails, GetProjectGitBranchState, GetWorkspace, RunProject, StopProject, SwitchProjectGitBranch, TerminatePortOwnerAndRun } from '../wailsjs/go/main/ProjectManager';
+import { ChooseFolder, CreateConfig, GetProjectDetails, GetProjectGitBranchState, GetWorkspace, RestartDocker, RunProject, StopProject, SwitchProjectGitBranch, TerminatePortOwnerAndRun } from '../wailsjs/go/main/ProjectManager';
 import { EventsOn } from '../wailsjs/runtime/runtime';
 import { Icon } from './icons';
 import type { CreateProjectInput, GitBranchState, ProcessIdentity, Project, ProjectDetails, ProjectLogEvent, ProjectStateEvent, WorkspaceState } from './types';
@@ -70,6 +70,7 @@ function App() {
   const serviceStateVersions = useRef<Record<string, number>>({});
   const [details, setDetails] = useState<ProjectDetails | null>(null);
   const [busyAction, setBusyAction] = useState<GlobalBusyAction>(null);
+  const [dockerRestarting, setDockerRestarting] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [portConflict, setPortConflict] = useState<ProcessIdentity | null>(null);
@@ -357,6 +358,20 @@ function App() {
     }
   };
 
+  const restartDocker = async () => {
+    setDockerRestarting(true);
+    setError('');
+    setNotice('');
+    try {
+      await RestartDocker();
+      setNotice('Docker Desktop restarted and is ready.');
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setDockerRestarting(false);
+    }
+  };
+
   const selectService = (service: Project['services'][number]) => {
     setSetupOpen(false);
     if (service.id === selectedServiceId) {
@@ -460,6 +475,9 @@ function App() {
           </div>
           <div className="topbar-actions">
             {(workspace.folder || workspace.projects.length > 0) && <span className="local-pill">This machine</span>}
+            <button className="secondary-button docker-restart-button" onClick={restartDocker} disabled={dockerRestarting} title="Restart Docker Desktop; running containers will be interrupted." aria-label={dockerRestarting ? 'Restarting Docker Desktop' : 'Restart Docker Desktop; running containers will be interrupted.'}>
+              <Icon name="refresh" />{dockerRestarting ? 'Restarting Docker…' : 'Restart Docker'}
+            </button>
             <button className="icon-button" onClick={chooseFolder} title="Add project folder" aria-label="Add project folder" disabled={workspaceHydrating || busyAction === 'folder'}><Icon name="folder-plus" /></button>
           </div>
         </header>
