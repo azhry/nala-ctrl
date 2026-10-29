@@ -23,7 +23,7 @@ Nala Ctrl is a local desktop process manager. The Go application and process man
 - Go streams complete log lines through the Wails `project:log` event. Each event includes project and service identities plus the file offset, so the UI can scope the stream and ignore lines already included in its initial log snapshot.
 - Go sends `project:state` events with project and service identities when a managed command starts or exits. The active view refreshes its running state after matching events; Run, Stop, and confirmed takeover also refresh details after the action completes.
 - Project detail snapshots contain at most 250 recent lines and read at most the latest 512 KiB of the log file.
-- The desktop app's Restart Docker action controls only the local Docker Desktop installation through the supported `docker desktop restart` CLI command. It falls back to `docker desktop start --detach` if restart fails, then checks the `desktop-linux` and `desktop-windows` contexts until one responds to `docker info` or the bounded recovery timeout expires. It does not reset Docker data, shut down WSL globally, or expose a Docker operation through the headless API. Restarting Docker Desktop interrupts running containers.
+- The desktop app's Fix Docker action controls only the local Docker Desktop installation. Before restarting, it checks the current boot logs for the known secrets-engine `engine.sock` rename failure. If that exact error is present and the corresponding zero-length Windows reparse point still exists, it checks whether either local Desktop context responds to `docker info`. Only while both are unavailable does it use WSL to move the socket to a unique `.codex-stale-*` backup path without deleting or replacing it. It then runs `docker desktop restart`, falls back to `docker desktop start --detach` if restart fails, and checks the `desktop-linux` and `desktop-windows` contexts until one responds to `docker info` or the bounded recovery timeout expires. The targeted repair requires WSL. The action does not reset Docker data, shut down WSL globally, or expose a Docker operation through the headless API. Restarting Docker Desktop interrupts running containers.
 
 ## Headless agent API
 
@@ -41,7 +41,7 @@ Nala Ctrl is a local desktop process manager. The Go application and process man
 | --- | --- |
 | `config.go` | One-project-per-file `projects` service map schema, validation, stable folder/service identities, path resolution, port inference from common flags, `--addr host:port`, and known defaults, plus first config creation. |
 | `manager.go` | Added-project and service registry, process lifecycle by service identity, exact-owner confirmation, and log tail reads. |
-| `docker_recovery.go` | Local Docker Desktop restart/start recovery and bounded local-engine readiness checks for the desktop app. |
+| `docker_recovery.go`, `docker_recovery_windows.go` | Local Docker Desktop socket repair, restart/start recovery, and bounded local-engine readiness checks for the desktop app. |
 | `ports.go`, `process_windows.go`, `process_unix.go` | Listening socket ownership and platform process control. |
 | `log_writer.go` | Append output and emit line/state event types. |
 | `app.go` | Wails-bound app methods and runtime event wiring. |

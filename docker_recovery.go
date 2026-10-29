@@ -11,21 +11,22 @@ import (
 )
 
 const (
-	dockerRecoveryTimeout        = 2 * time.Minute
+	dockerRecoveryTimeout        = 5 * time.Minute
 	dockerRestartCommandTimeout  = 45 * time.Second
 	dockerStartCommandTimeout    = 20 * time.Second
-	dockerEngineProbeTimeout     = 4 * time.Second
+	dockerEngineProbeTimeout     = 10 * time.Second
 	dockerEnginePollInterval     = 2 * time.Second
 	dockerEngineReadinessTimeout = 90 * time.Second
 )
 
-// RestartDocker restarts the local Docker Desktop installation and waits for
-// one of its local Desktop engines to accept Docker CLI requests.
-func (p *ProjectManager) RestartDocker() error {
-	if !p.dockerRestartMu.TryLock() {
+// FixDocker repairs the known blocked Docker secrets socket when its exact
+// startup error is present, then restarts Docker Desktop and waits for a
+// local Desktop engine to accept Docker CLI requests.
+func (p *ProjectManager) FixDocker() error {
+	if !p.dockerFixMu.TryLock() {
 		return errors.New("Docker Desktop recovery is already in progress.")
 	}
-	defer p.dockerRestartMu.Unlock()
+	defer p.dockerFixMu.Unlock()
 
 	dockerPath, err := exec.LookPath("docker")
 	if err != nil {
@@ -38,6 +39,10 @@ func (p *ProjectManager) RestartDocker() error {
 	}
 	ctx, cancel := context.WithTimeout(parent, dockerRecoveryTimeout)
 	defer cancel()
+
+	if _, err := repairKnownDockerSecretsSocket(ctx, dockerPath); err != nil {
+		return err
+	}
 
 	restartCtx, cancelRestart := context.WithTimeout(ctx, dockerRestartCommandTimeout)
 	restartErr := exec.CommandContext(restartCtx, dockerPath, "desktop", "restart").Run()

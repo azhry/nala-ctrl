@@ -95,7 +95,7 @@ Run the desktop app in development mode from the repository root with `wails dev
 wails dev
 ```
 
-The desktop app includes a **Restart Docker** action for local Docker Desktop recovery. It restarts Docker Desktop and waits for a local Desktop engine to respond. Restarting interrupts running containers. This action requires the Docker Desktop CLI (`docker desktop`) to be available on `PATH`; it does not reset images, containers, or volumes.
+The desktop app includes a one-click **Fix Docker** action for local Docker Desktop recovery. Before restarting Docker Desktop, it checks the current boot logs for the known secrets-engine socket rename failure. If that exact error is present and the matching zero-length Windows reparse point still exists, it confirms no local Desktop engine is ready, then moves the socket aside through WSL and preserves it under a timestamped backup name. It then uses the supported Docker Desktop restart/start commands and waits for a local engine to respond. Restarting interrupts running containers. The known socket repair requires WSL; the action does not reset images, containers, or volumes.
 
 Build a native application package:
 
