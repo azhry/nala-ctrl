@@ -46,6 +46,27 @@ func TestProjectGitBranchStateAndSwitch(t *testing.T) {
 	}
 }
 
+func TestSwitchProjectGitBranchAllowsBranchCheckedOutInAnotherWorktree(t *testing.T) {
+	manager, project, gitPath := gitTestProject(t)
+	otherWorktree := filepath.Join(filepath.Dir(project.Folder), "git-project-other-worktree")
+	gitTestCommand(t, gitPath, project.Folder, "worktree", "add", otherWorktree, "feature/azh-523")
+
+	state, err := manager.SwitchProjectGitBranch(project.ID, "feature/azh-523")
+	if err != nil {
+		t.Fatalf("switch to branch checked out in another worktree: %v", err)
+	}
+	if state.CurrentBranch != "feature/azh-523" {
+		t.Fatalf("current branch after switch = %q, want feature/azh-523", state.CurrentBranch)
+	}
+	otherBranch, err := runGit(gitPath, otherWorktree, "branch", "--show-current")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if otherBranch != "feature/azh-523" {
+		t.Fatalf("branch in other worktree = %q, want feature/azh-523", otherBranch)
+	}
+}
+
 func TestSwitchProjectGitBranchRefusesDirtyWorkingTree(t *testing.T) {
 	manager, project, _ := gitTestProject(t)
 	changedFile := filepath.Join(project.Folder, "branch.txt")

@@ -62,7 +62,7 @@ func (m *Manager) SwitchProjectGitBranch(projectID, branchName string) (*GitBran
 	if status != "" {
 		return nil, errors.New("working tree has uncommitted changes; commit or move them before switching branches")
 	}
-	if _, err := runGit(gitPath, state.RepositoryRoot, "switch", "--no-guess", "--", branchName); err != nil {
+	if _, err := runGit(gitPath, state.RepositoryRoot, "switch", "--ignore-other-worktrees", "--no-guess", "--", branchName); err != nil {
 		return nil, fmt.Errorf("switch to branch %q: %w", branchName, err)
 	}
 	return readGitBranchState(folder)
