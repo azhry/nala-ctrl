@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"sync"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -10,8 +11,9 @@ import (
 // folders explicitly added from the app, with separate services from each
 // folder's nala.yml.
 type ProjectManager struct {
-	ctx     context.Context
-	manager *Manager
+	ctx         context.Context
+	manager     *Manager
+	dockerFixMu sync.Mutex
 }
 
 func NewProjectManager() *ProjectManager {

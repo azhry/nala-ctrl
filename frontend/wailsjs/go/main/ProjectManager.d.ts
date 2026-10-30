@@ -6,6 +6,8 @@ export function ChooseFolder():Promise<main.WorkspaceState>;
 
 export function CreateConfig(arg1:main.CreateProjectInput):Promise<main.WorkspaceState>;
 
+export function FixDocker():Promise<void>;
+
 export function GetProjectDetails(arg1:string):Promise<main.ProjectDetails>;
 
 export function GetProjectGitBranchState(arg1:string):Promise<main.GitBranchState>;
