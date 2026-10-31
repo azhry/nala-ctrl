@@ -20,9 +20,12 @@ import (
 
 const (
 	defaultAgentAPIListen = "127.0.0.1:47653"
+	desktopAgentAPIListen = "127.0.0.1:47654"
 	maxAgentAPIRequest    = 1 << 20
 	defaultAgentLogLimit  = 100
 	maxAgentLogLimit      = 250
+	agentAPIModeDesktop   = "desktop"
+	agentAPIModeHeadless  = "headless"
 )
 
 type agentWorkspaceDTO struct {
@@ -140,22 +143,13 @@ func validateAgentAPIListenAddress(address string) error {
 }
 
 func serveAgentAPI(address string, stdout io.Writer) error {
-	if err := validateAgentAPIListenAddress(address); err != nil {
-		return err
-	}
-	listener, err := net.Listen("tcp", address)
+	listener, err := listenAgentAPI(address)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", address, err)
+		return err
 	}
 	manager := NewManager()
 	manager.Workspace()
-	server := &http.Server{
-		Handler:           newAgentAPIHandler(manager),
-		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    16 * 1024,
-		ErrorLog:          log.New(io.Discard, "", 0),
-	}
+	server := newAgentAPIServer(manager, agentAPIModeHeadless)
 	fmt.Fprintf(stdout, "Nala Ctrl agent API listening on http://%s\n", listener.Addr())
 
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -181,12 +175,36 @@ func serveAgentAPI(address string, stdout io.Writer) error {
 	}
 }
 
+func listenAgentAPI(address string) (net.Listener, error) {
+	if err := validateAgentAPIListenAddress(address); err != nil {
+		return nil, err
+	}
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return nil, fmt.Errorf("listen on %s: %w", address, err)
+	}
+	return listener, nil
+}
+
+func newAgentAPIServer(manager *Manager, mode string) *http.Server {
+	return &http.Server{
+		Handler:           newAgentAPIHandler(manager, mode),
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 * 1024,
+		ErrorLog:          log.New(io.Discard, "", 0),
+	}
+}
+
 var errAgentServiceNotFound = errors.New("service not found")
 
-func newAgentAPIHandler(manager *Manager) http.Handler {
+func newAgentAPIHandler(manager *Manager, mode string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) {
-		writeAgentJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		writeAgentJSON(w, http.StatusOK, struct {
+			OK   bool   `json:"ok"`
+			Mode string `json:"mode"`
+		}{OK: true, Mode: mode})
 	})
 	mux.HandleFunc("GET /v1/workspace", func(w http.ResponseWriter, _ *http.Request) {
 		writeAgentJSON(w, http.StatusOK, safeAgentWorkspace(manager.Workspace()))

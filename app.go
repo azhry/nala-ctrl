@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/http"
 	"sync"
+	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -13,6 +17,7 @@ import (
 type ProjectManager struct {
 	ctx         context.Context
 	manager     *Manager
+	agentAPI    *http.Server
 	dockerFixMu sync.Mutex
 }
 
@@ -28,9 +33,27 @@ func (p *ProjectManager) startup(ctx context.Context) {
 	p.manager.SetStateHandler(func(event ProjectStateEvent) {
 		runtime.EventsEmit(p.ctx, projectStateEventName, event)
 	})
+	listener, err := listenAgentAPI(desktopAgentAPIListen)
+	if err != nil {
+		runtime.LogError(p.ctx, fmt.Sprintf("Nala Ctrl agent API could not start: %v", err))
+		return
+	}
+	p.agentAPI = newAgentAPIServer(p.manager, agentAPIModeDesktop)
+	go func() {
+		if err := p.agentAPI.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			runtime.LogError(p.ctx, fmt.Sprintf("Nala Ctrl agent API stopped: %v", err))
+		}
+	}()
 }
 
 func (p *ProjectManager) shutdown(ctx context.Context) {
+	if p.agentAPI != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := p.agentAPI.Shutdown(shutdownCtx); err != nil {
+			runtime.LogError(p.ctx, fmt.Sprintf("Nala Ctrl agent API shutdown failed: %v", err))
+		}
+		cancel()
+	}
 	_ = p.manager.StopAll()
 }
 
