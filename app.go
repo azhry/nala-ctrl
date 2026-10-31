@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -18,11 +19,15 @@ type ProjectManager struct {
 	ctx         context.Context
 	manager     *Manager
 	agentAPI    *http.Server
+	headlessAPI *headlessAPIController
 	dockerFixMu sync.Mutex
 }
 
 func NewProjectManager() *ProjectManager {
-	return &ProjectManager{manager: NewManager()}
+	return &ProjectManager{
+		manager:     NewManager(),
+		headlessAPI: newHeadlessAPIController(defaultAgentAPIListen, NewManager),
+	}
 }
 
 func (p *ProjectManager) startup(ctx context.Context) {
@@ -36,14 +41,20 @@ func (p *ProjectManager) startup(ctx context.Context) {
 	listener, err := listenAgentAPI(desktopAgentAPIListen)
 	if err != nil {
 		runtime.LogError(p.ctx, fmt.Sprintf("Nala Ctrl agent API could not start: %v", err))
-		return
+	} else {
+		p.agentAPI = newAgentAPIServer(p.manager, agentAPIModeDesktop)
+		go func() {
+			if err := p.agentAPI.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				runtime.LogError(p.ctx, fmt.Sprintf("Nala Ctrl agent API stopped: %v", err))
+			}
+		}()
 	}
-	p.agentAPI = newAgentAPIServer(p.manager, agentAPIModeDesktop)
-	go func() {
-		if err := p.agentAPI.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			runtime.LogError(p.ctx, fmt.Sprintf("Nala Ctrl agent API stopped: %v", err))
+
+	if os.Getenv(headlessAPIDevAutostartEnv) == "1" {
+		if _, err := p.headlessAPI.Start(); err != nil {
+			runtime.LogError(p.ctx, fmt.Sprintf("Nala Ctrl headless API could not start: %v", err))
 		}
-	}()
+	}
 }
 
 func (p *ProjectManager) shutdown(ctx context.Context) {
@@ -54,7 +65,22 @@ func (p *ProjectManager) shutdown(ctx context.Context) {
 		}
 		cancel()
 	}
+	if _, err := p.headlessAPI.Stop(); err != nil {
+		runtime.LogError(p.ctx, fmt.Sprintf("Nala Ctrl headless API shutdown failed: %v", err))
+	}
 	_ = p.manager.StopAll()
+}
+
+func (p *ProjectManager) GetHeadlessAPIStatus() HeadlessAPIStatus {
+	return p.headlessAPI.Status()
+}
+
+func (p *ProjectManager) StartHeadlessAPI() (HeadlessAPIStatus, error) {
+	return p.headlessAPI.Start()
+}
+
+func (p *ProjectManager) StopHeadlessAPI() (HeadlessAPIStatus, error) {
+	return p.headlessAPI.Stop()
 }
 
 func (p *ProjectManager) ChooseFolder() (*WorkspaceState, error) {
