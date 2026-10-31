@@ -67,7 +67,7 @@ Workspace and service responses omit configured `run` commands and environment v
 
 ## Development
 
-Requirements: Go 1.26 or newer, Node.js 20.19+ or 22.12+, npm, and the platform dependencies required by Wails v2. See the [Wails installation guide](https://wails.io/docs/gettingstarted/installation) for the native desktop dependencies for your operating system.
+Requirements: Go 1.26 or newer, Node.js 20.19+ or 22.12+, npm, GNU Make, and the platform dependencies required by Wails v2. See the [Wails installation guide](https://wails.io/docs/gettingstarted/installation) for the native desktop dependencies for your operating system.
 
 Install the Wails CLI, add its Go install directory to this shell's `PATH`, and install the frontend dependencies:
 
@@ -91,11 +91,13 @@ cd ..
 
 The Wails CLI is installed under `GOBIN`, or under `GOPATH/bin` when `GOBIN` is empty. The `PATH` change above applies to the current terminal; repeat it in a new terminal if `wails` is not found. On Windows Git Bash, `cygpath` converts Go's Windows path to a Git Bash path.
 
-Run the desktop app in development mode from the repository root with `wails dev` (Wails v2 does not provide a `wails run` command):
+Start the desktop app and the headless API from this checkout with:
 
 ```bash
-wails dev
+make dev
 ```
+
+This target runs `wails dev` and sets the development flag that starts the headless API on `127.0.0.1:47653` inside that same app process. Health reports `mode=headless`; the API owns a separate Manager from the desktop API at `127.0.0.1:47654`. Use the app's headless API control to stop or restart it. Stopping the API stops only services its Manager started. If the port is already occupied, the app reports the bind error and leaves that owner alone. Running `wails dev` directly starts the desktop API but does not auto-start the headless API. The standalone `nala-ctrl api serve` command remains available when only a headless API is needed.
 
 The desktop app includes a one-click **Fix Docker** action for local Docker Desktop recovery. Before restarting Docker Desktop, it checks the current boot logs for the known secrets-engine socket rename failure. If that exact error is present and the matching zero-length Windows reparse point still exists, it confirms no local Desktop engine is ready, then moves the socket aside through WSL and preserves it under a timestamped backup name. It then uses the supported Docker Desktop restart/start commands and waits for a local engine to respond. Restarting interrupts running containers. The known socket repair requires WSL; the action does not reset images, containers, or volumes.
 

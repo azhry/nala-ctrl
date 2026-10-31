@@ -14,6 +14,10 @@ export function FixDocker() {
   return window['go']['main']['ProjectManager']['FixDocker']();
 }
 
+export function GetHeadlessAPIStatus() {
+  return window['go']['main']['ProjectManager']['GetHeadlessAPIStatus']();
+}
+
 export function GetProjectDetails(arg1) {
   return window['go']['main']['ProjectManager']['GetProjectDetails'](arg1);
 }
@@ -32,6 +36,14 @@ export function LoadFolder(arg1) {
 
 export function RunProject(arg1) {
   return window['go']['main']['ProjectManager']['RunProject'](arg1);
+}
+
+export function StartHeadlessAPI() {
+  return window['go']['main']['ProjectManager']['StartHeadlessAPI']();
+}
+
+export function StopHeadlessAPI() {
+  return window['go']['main']['ProjectManager']['StopHeadlessAPI']();
 }
 
 export function StopProject(arg1) {

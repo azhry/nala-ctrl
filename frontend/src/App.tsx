@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, FormEvent, RefObject, SetStateAction } from 'react';
-import { ChooseFolder, CreateConfig, FixDocker, GetProjectDetails, GetProjectGitBranchState, GetWorkspace, RunProject, StopProject, SwitchProjectGitBranch, TerminatePortOwnerAndRun } from '../wailsjs/go/main/ProjectManager';
+import { ChooseFolder, CreateConfig, FixDocker, GetHeadlessAPIStatus, GetProjectDetails, GetProjectGitBranchState, GetWorkspace, RunProject, StartHeadlessAPI, StopHeadlessAPI, StopProject, SwitchProjectGitBranch, TerminatePortOwnerAndRun } from '../wailsjs/go/main/ProjectManager';
 import { EventsOn } from '../wailsjs/runtime/runtime';
 import { Icon } from './icons';
 import type { CreateProjectInput, GitBranchState, ProcessIdentity, Project, ProjectDetails, ProjectLogEvent, ProjectStateEvent, WorkspaceState } from './types';
@@ -9,6 +9,8 @@ import './App.css';
 type GlobalBusyAction = 'folder' | 'config' | null;
 type ServiceAction = 'run' | 'stop' | 'terminate';
 type ServiceStatus = { running: boolean; pid: number };
+type HeadlessAPIAction = 'checking' | 'start' | 'stop' | null;
+type HeadlessAPIStatus = { running: boolean; address: string; error: string };
 const projectLogEventName = 'project:log';
 const projectStateEventName = 'project:state';
 
@@ -77,6 +79,9 @@ function App() {
   const [details, setDetails] = useState<ProjectDetails | null>(null);
   const [busyAction, setBusyAction] = useState<GlobalBusyAction>(null);
   const [dockerFixing, setDockerFixing] = useState(false);
+  const [headlessAPIStatus, setHeadlessAPIStatus] = useState<HeadlessAPIStatus | null>(null);
+  const [headlessAPIAction, setHeadlessAPIAction] = useState<HeadlessAPIAction>('checking');
+  const [headlessAPIError, setHeadlessAPIError] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [portConflict, setPortConflict] = useState<ProcessIdentity | null>(null);
@@ -117,6 +122,24 @@ function App() {
     selectedServiceRef.current = serviceId;
     setSelectedServiceId(serviceId);
   }, []);
+
+  const refreshHeadlessAPIStatus = useCallback(async () => {
+    setHeadlessAPIAction('checking');
+    try {
+      const next = await GetHeadlessAPIStatus();
+      setHeadlessAPIStatus(next);
+      setHeadlessAPIError(next.error || '');
+    } catch (caught) {
+      setHeadlessAPIStatus(null);
+      setHeadlessAPIError('Unable to read headless API status: ' + errorMessage(caught));
+    } finally {
+      setHeadlessAPIAction((current) => current === 'checking' ? null : current);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshHeadlessAPIStatus();
+  }, [refreshHeadlessAPIStatus]);
 
   useEffect(() => {
     let cancelled = false;
@@ -378,6 +401,33 @@ function App() {
     }
   };
 
+  const toggleHeadlessAPI = async () => {
+    if (headlessAPIAction) return;
+    if (!headlessAPIStatus) {
+      await refreshHeadlessAPIStatus();
+      return;
+    }
+
+    const wasRunning = headlessAPIStatus.running;
+    setHeadlessAPIAction(wasRunning ? 'stop' : 'start');
+    setHeadlessAPIError('');
+    try {
+      const next = wasRunning ? await StopHeadlessAPI() : await StartHeadlessAPI();
+      setHeadlessAPIStatus(next);
+      setHeadlessAPIError(next.error || '');
+    } catch (caught) {
+      const action = wasRunning ? 'stop' : 'start';
+      setHeadlessAPIError('Unable to ' + action + ' the headless API: ' + errorMessage(caught));
+      try {
+        setHeadlessAPIStatus(await GetHeadlessAPIStatus());
+      } catch {
+        setHeadlessAPIStatus(null);
+      }
+    } finally {
+      setHeadlessAPIAction(null);
+    }
+  };
+
   const selectService = (service: Project['services'][number]) => {
     setSetupOpen(false);
     if (service.id === selectedServiceId) {
@@ -484,12 +534,44 @@ function App() {
             <button type="button" className="secondary-button docker-fix-button" onClick={fixDocker} disabled={dockerFixing} title="Fix Docker Desktop. It may restart and interrupt running containers." aria-label={dockerFixing ? 'Fixing Docker Desktop; it may restart and interrupt running containers.' : 'Fix Docker Desktop; it may restart and interrupt running containers.'}>
               <Icon name="refresh" />{dockerFixing ? 'Fixing Docker…' : 'Fix Docker'}
             </button>
+            <div className="headless-api-control" role="group" aria-label="Headless API controls">
+              <div className="headless-api-copy">
+                <span
+                  className={'headless-api-state' + (headlessAPIStatus?.running ? ' is-running' : '') + (headlessAPIError || headlessAPIStatus?.error ? ' has-error' : '')}
+                  role="status"
+                  aria-live="polite"
+                  title={headlessAPIStatus?.address || '127.0.0.1:47653'}
+                >
+                  <i aria-hidden="true" />
+                  <span>
+                    Headless API · {headlessAPIAction === 'checking' ? 'Checking' : headlessAPIStatus?.running ? 'Running' : headlessAPIError || headlessAPIStatus?.error ? 'Unavailable' : 'Stopped'}
+                  </span>
+                </span>
+                {headlessAPIStatus?.running && <small id="headless-api-stop-impact" className="headless-api-hint">Stopping also stops services it started</small>}
+              </div>
+              <button
+                type="button"
+                className="secondary-button headless-api-button"
+                onClick={toggleHeadlessAPI}
+                disabled={headlessAPIAction !== null}
+                title={headlessAPIStatus?.running
+                  ? 'Stop headless API at ' + headlessAPIStatus.address + '. Stopping also stops services it started.'
+                  : 'Start headless API at ' + (headlessAPIStatus?.address || '127.0.0.1:47653')}
+                aria-describedby={[
+                  headlessAPIStatus?.running ? 'headless-api-stop-impact' : '',
+                  headlessAPIError ? 'headless-api-error' : '',
+                ].filter(Boolean).join(' ') || undefined}
+              >
+                {headlessAPIAction === 'checking' ? 'Checking…' : headlessAPIAction === 'start' ? 'Starting…' : headlessAPIAction === 'stop' ? 'Stopping…' : headlessAPIStatus ? headlessAPIStatus.running ? 'Stop API' : 'Start API' : 'Retry status'}
+              </button>
+            </div>
             <button className="icon-button" onClick={chooseFolder} title="Add project folder" aria-label="Add project folder" disabled={workspaceHydrating || busyAction === 'folder'}><Icon name="folder-plus" /></button>
           </div>
         </header>
 
         <div className="content-scroll">
           {error && <div className="message-banner error-banner" role="alert"><Icon name="warning" /><span>{error}</span><button onClick={() => setError('')} aria-label="Dismiss error"><Icon name="close" /></button></div>}
+          {headlessAPIError && <div id="headless-api-error" className="message-banner error-banner" role="alert"><Icon name="warning" /><span>Headless API: {headlessAPIError}</span><button onClick={() => setHeadlessAPIError('')} aria-label="Dismiss headless API error"><Icon name="close" /></button></div>}
           {workspaceWarnings.length > 0 && <div className="message-banner error-banner" role="status" aria-live="polite"><Icon name="warning" /><span>Workspace warning: {workspaceWarnings.join(' ')}</span><button onClick={() => setWorkspaceWarnings([])} aria-label="Dismiss workspace warnings"><Icon name="close" /></button></div>}
           {notice && <div className="message-banner notice-banner" role="status"><Icon name="check" /><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Dismiss notification"><Icon name="close" /></button></div>}
           {workspaceHydrating ? (
