@@ -56,6 +56,12 @@ function appendLogEvent(details: ProjectDetails, event: ProjectLogEvent): Projec
   return { ...details, logLines: [...details.logLines, event.line].slice(-250), logSize: event.logSize };
 }
 
+const ansiControlSequence = /\u001B(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001B\\)|[PX^_][\s\S]*?\u001B\\)|\u009B[0-?]*[ -/]*[@-~]/g;
+
+function displayLogLine(line: string): string {
+  return line.replace(ansiControlSequence, '');
+}
+
 function App() {
   const [workspace, setWorkspace] = useState<WorkspaceState>(emptyWorkspace);
   const [workspaceHydrating, setWorkspaceHydrating] = useState(true);
@@ -708,7 +714,7 @@ function ProjectScreen({
         </div>
         <div ref={logScreenRef} className="log-screen" role="log" aria-live="off" aria-relevant="additions text">
           {lines.length ? lines.map((line, index) => (
-            <div className="log-line" key={`${index}-${line}`}><span className="line-number">{String(index + 1).padStart(3, '0')}</span><span className="line-text">{line || ' '}</span></div>
+            <div className="log-line" key={`${index}-${line}`}><span className="line-number">{String(index + 1).padStart(3, '0')}</span><span className="line-text">{displayLogLine(line) || ' '}</span></div>
           )) : (
             <div className="log-empty"><div className="log-empty-mark"><Icon name="terminal" /></div><strong>No output yet</strong><span>{running ? 'Waiting for the service to write its first line.' : 'Run this service to start capturing its output.'}</span></div>
           )}
