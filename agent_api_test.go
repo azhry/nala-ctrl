@@ -15,17 +15,17 @@ import (
 
 func TestAgentAPIIsUnauthenticatedAndLoopbackOnly(t *testing.T) {
 	manager := newTestManager(t)
-	handler := newAgentAPIHandler(manager)
+	handler := newAgentAPIHandler(manager, agentAPIModeDesktop)
 
-	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:47653/v1/health", nil)
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:47654/v1/health", nil)
 	request.RemoteAddr = "127.0.0.1:12345"
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `{"ok":true}`) {
+	if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != `{"ok":true,"mode":"desktop"}` {
 		t.Fatalf("unauthenticated loopback health status = %d: %s", response.Code, response.Body.String())
 	}
 
-	request = httptest.NewRequest(http.MethodGet, "http://127.0.0.1:47653/v1/health", nil)
+	request = httptest.NewRequest(http.MethodGet, "http://127.0.0.1:47654/v1/health", nil)
 	request.RemoteAddr = "192.0.2.10:12345"
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -41,13 +41,21 @@ func TestAgentAPIIsUnauthenticatedAndLoopbackOnly(t *testing.T) {
 		t.Fatalf("external Host status = %d, want %d", response.Code, http.StatusForbidden)
 	}
 
-	request = httptest.NewRequest(http.MethodGet, "http://127.0.0.1:47653/v1/health", nil)
+	request = httptest.NewRequest(http.MethodGet, "http://127.0.0.1:47654/v1/health", nil)
 	request.RemoteAddr = "127.0.0.1:12345"
 	request.Header.Set("Origin", "http://localhost")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("browser-origin status = %d, want %d", response.Code, http.StatusForbidden)
+	}
+}
+
+func TestAgentAPIHealthReportsHeadlessMode(t *testing.T) {
+	manager := newTestManager(t)
+	response := agentAPIRequest(t, newAgentAPIHandler(manager, agentAPIModeHeadless), http.MethodGet, "/v1/health", "", nil)
+	if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != `{"ok":true,"mode":"headless"}` {
+		t.Fatalf("headless health = %d %s, want the headless API mode", response.Code, response.Body.String())
 	}
 }
 
@@ -61,7 +69,7 @@ func TestAgentAPIWorkspaceOmitsConfiguredRunCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := newAgentAPIHandler(manager)
+	handler := newAgentAPIHandler(manager, agentAPIModeHeadless)
 	response := agentAPIRequest(t, handler, http.MethodGet, "/v1/workspace", "", nil)
 	if response.Code != http.StatusOK {
 		t.Fatalf("workspace status = %d: %s", response.Code, response.Body.String())
@@ -85,7 +93,7 @@ func TestAgentAPIProjectLoadRegistersOnlyExplicitFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := newTestManager(t)
-	handler := newAgentAPIHandler(manager)
+	handler := newAgentAPIHandler(manager, agentAPIModeHeadless)
 	headers := make(http.Header)
 	headers.Set("Content-Type", "application/json")
 	requestBody, err := json.Marshal(map[string]string{"folder": folder})
@@ -123,7 +131,7 @@ func TestAgentAPIFlagsWorkspacePersistenceWarningsWithoutExposingDetails(t *test
 		t.Fatal(err)
 	}
 	manager := newManagerWithRegistryPath(filepath.Join(registryParent, "project-folders.json"))
-	handler := newAgentAPIHandler(manager)
+	handler := newAgentAPIHandler(manager, agentAPIModeHeadless)
 	headers := make(http.Header)
 	headers.Set("Content-Type", "application/json")
 	requestBody, err := json.Marshal(map[string]string{"folder": folder})
@@ -161,7 +169,7 @@ func TestAgentAPIRunStopAndBoundedLogs(t *testing.T) {
 	if err := os.WriteFile(service.LogPath, []byte("one\ntwo\nthree\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	managerHandler := newAgentAPIHandler(manager)
+	managerHandler := newAgentAPIHandler(manager, agentAPIModeHeadless)
 	t.Cleanup(func() { _ = manager.StopAll() })
 
 	path := "/v1/services/" + url.PathEscape(service.ID)
@@ -228,7 +236,7 @@ func TestAgentAPIRunStopAndBoundedLogs(t *testing.T) {
 
 func TestAgentAPIBranchLookupUsesRegisteredProjectPath(t *testing.T) {
 	manager, project, _ := gitTestProject(t)
-	handler := newAgentAPIHandler(manager)
+	handler := newAgentAPIHandler(manager, agentAPIModeHeadless)
 	query := url.Values{"projectId": []string{project.ID}}
 	response := agentAPIRequest(t, handler, http.MethodGet, "/v1/projects/git-branch?"+query.Encode(), "", nil)
 	if response.Code != http.StatusOK {
