@@ -911,7 +911,7 @@ function ProjectBranchControl({ project }: { project: Project }) {
             role={error ? 'alert' : 'status'}
             aria-live={error ? 'assertive' : 'polite'}
           >
-            {error || status || (branchState.currentBranch ? `Current branch: ${branchState.currentBranch}` : 'No branch is currently checked out.')}
+            {error || status || (branchState.currentBranch ? '' : 'No branch is currently checked out.')}
           </p>
         </>
       ) : (
