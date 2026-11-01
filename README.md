@@ -23,6 +23,7 @@ projects:
 - Each entry under `projects` is a service and requires `cwd` and `run`. Relative working directories resolve from the selected folder.
 - `port` is optional per service. Nala Ctrl detects common explicit port flags, Go `--addr host:port` listener addresses, and known defaults for Vite, Next.js, Python's HTTP server, and webpack. Set it explicitly when your command uses a different port. Without a detected port, the app can still run and capture logs, but cannot check for a port conflict first.
 - `log` is optional per service and sets its log file path. By default, process output is appended to `logs/<service-name>.log` under that service's `cwd`.
+- `deployment` is an optional mapping reserved for Nala SVC. Nala Ctrl accepts it but does not inspect it or use it for local service startup; Nala SVC validates its contents. Unknown fields outside this mapping are rejected.
 
 Each folder you add contributes one project group to the list. Its services have separate status, Run/Stop controls, and log streams. Switching between projects or services does not stop running commands. Closing the app stops every process it started.
 
