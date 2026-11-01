@@ -7,7 +7,8 @@ Nala Ctrl is a local desktop process manager. The Go application and process man
 - The user adds project folders with the native folder dialog. Nala Ctrl remembers explicitly added folders in the user's application config directory and restores configured projects at startup; each folder's `nala.yml` defines one project group. Its `projects` map contains named services. The group ID is its normalized absolute folder path, so same-basename folders remain distinct; service IDs are stable per folder and service key. Restoring a project never starts its services.
 - Each service config requires `cwd` and `run`; `port` and `log` are optional. Relative working directories resolve from the project folder. Relative log paths resolve from the service working directory. Each service has an independent process state, port check, and log stream.
 - If `nala.yml` is absent, the UI gathers `cwd`, `run`, and optional `port`, derives an initial service key and project name from the folder basename, and creates a `projects` map without overwriting an existing file. Existing projects and processes remain available while setup is shown.
-- Unknown YAML fields, missing service fields, and invalid port values are rejected. A config with no services is rejected.
+- Unknown YAML fields outside the recognized `deployment` extension, missing service fields, and invalid port values are rejected. A config with no services is rejected.
+- Each service may include a mapping-valued `deployment` extension owned by Nala SVC. Nala Ctrl accepts it as an opaque YAML node; it does not validate nested fields or use them for local service behavior.
 - All explicitly added project groups and their services appear in the UI. Selecting or adding another folder or service changes the monitored view and never stops already-running processes. There is no system-wide process discovery feature.
 
 ## Process lifecycle and port safety

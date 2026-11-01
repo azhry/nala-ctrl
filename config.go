@@ -25,10 +25,23 @@ type projectFile struct {
 }
 
 type serviceFile struct {
-	CWD  string `yaml:"cwd"`
-	Run  string `yaml:"run"`
-	Port *int   `yaml:"port,omitempty"`
-	Log  string `yaml:"log,omitempty"`
+	CWD        string          `yaml:"cwd"`
+	Run        string          `yaml:"run"`
+	Port       *int            `yaml:"port,omitempty"`
+	Log        string          `yaml:"log,omitempty"`
+	Deployment *deploymentFile `yaml:"deployment,omitempty"`
+}
+
+type deploymentFile struct {
+	yaml.Node
+}
+
+func (d *deploymentFile) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return errors.New("deployment must be a mapping")
+	}
+	d.Node = *node
+	return nil
 }
 
 type CreateProjectInput struct {

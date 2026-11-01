@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 )
 
 func projectTestFolder(t *testing.T, name string) string {
@@ -23,10 +25,43 @@ func newTestManager(t *testing.T) *Manager {
 
 func TestDecodeProjectFileAndResolveDefaults(t *testing.T) {
 	folder := projectTestFolder(t, "nala-labs")
-	data := []byte("projects:\n  backend:\n    cwd: ./api\n    run: go run . --port=8081\n  frontend:\n    cwd: ./web\n    run: npm run dev -- --port 5173\n")
+	data := []byte(`projects:
+  backend:
+    cwd: ./api
+    run: go run . --port=8081
+    deployment:
+      schemaVersion: 1
+      app:
+        name: nala-grow-backend
+      build:
+        command: [go, build, ./cmd/server]
+      test:
+        command: [go, test, ./...]
+      runtime:
+        command: [./server]
+  frontend:
+    cwd: ./web
+    run: npm run dev -- --port 5173
+    deployment:
+      schemaVersion: 1
+      app:
+        name: nala-grow-frontend
+      build:
+        command: [npm, run, build]
+      test:
+        command: [npm, run, test]
+      runtime:
+        command: [npm, run, start]
+`)
 	config, err := decodeProjectFile(data)
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, name := range []string{"backend", "frontend"} {
+		deployment := config.Projects[name].Deployment
+		if deployment == nil || deployment.Kind != yaml.MappingNode {
+			t.Fatalf("%s deployment node = %#v, want a YAML mapping", name, deployment)
+		}
 	}
 	project, services, err := projectForFolder(folder, config)
 	if err != nil {
@@ -97,6 +132,7 @@ func TestDecodeProjectFileRejectsInvalidEntries(t *testing.T) {
 		{name: "missing cwd", data: "projects:\n  backend:\n    run: go run .\n"},
 		{name: "missing run", data: "projects:\n  backend:\n    cwd: .\n"},
 		{name: "invalid port", data: "projects:\n  backend:\n    cwd: .\n    run: go run .\n    port: 65536\n"},
+		{name: "non-mapping deployment", data: "projects:\n  backend:\n    cwd: .\n    run: go run .\n    deployment: false\n"},
 		{name: "unknown service field", data: "projects:\n  backend:\n    cwd: .\n    run: go run .\n    watch: true\n"},
 		{name: "unknown top level field", data: "projects:\n  backend:\n    cwd: .\n    run: go run .\nwatch: true\n"},
 	}
@@ -144,6 +180,9 @@ func TestCreateConfigWritesOneServiceProjectWithoutOverwriting(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "projects:") || !strings.Contains(string(data), "nala-labs:") || !strings.Contains(string(data), "cwd: .") || !strings.Contains(string(data), "run: go run . --port 8090") || !strings.Contains(string(data), "port: 8090") {
 		t.Fatalf("created config does not contain the expected project service map: %s", data)
+	}
+	if strings.Contains(string(data), "deployment:") {
+		t.Fatalf("created config unexpectedly contains a deployment extension: %s", data)
 	}
 	restored := newManagerWithRegistryPath(registryPath).Workspace()
 	if len(restored.Projects) != 1 || restored.Projects[0].Folder != folder {
