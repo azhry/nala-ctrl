@@ -16,22 +16,6 @@ export namespace main {
 	        this.port = source["port"];
 	    }
 	}
-	export class HeadlessAPIStatus {
-	    running: boolean;
-	    address: string;
-	    error: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new HeadlessAPIStatus(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.running = source["running"];
-	        this.address = source["address"];
-	        this.error = source["error"];
-	    }
-	}
 	export class GitBranchState {
 	    available: boolean;
 	    repositoryRoot: string;
@@ -48,6 +32,22 @@ export namespace main {
 	        this.repositoryRoot = source["repositoryRoot"];
 	        this.currentBranch = source["currentBranch"];
 	        this.branches = source["branches"];
+	    }
+	}
+	export class HeadlessAPIStatus {
+	    running: boolean;
+	    address: string;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HeadlessAPIStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.running = source["running"];
+	        this.address = source["address"];
+	        this.error = source["error"];
 	    }
 	}
 	export class ProcessIdentity {

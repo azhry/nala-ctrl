@@ -10,7 +10,7 @@ type GlobalBusyAction = 'folder' | 'config' | null;
 type ServiceAction = 'run' | 'stop' | 'terminate';
 type ServiceStatus = { running: boolean; pid: number };
 type HeadlessAPIAction = 'checking' | 'start' | 'stop' | null;
-type HeadlessAPIStatus = { running: boolean; address: string; error: string };
+type HeadlessAPIStatus = { running: boolean; address: string; error?: string };
 const projectLogEventName = 'project:log';
 const projectStateEventName = 'project:state';
 
