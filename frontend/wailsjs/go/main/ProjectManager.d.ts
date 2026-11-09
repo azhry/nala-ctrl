@@ -28,4 +28,6 @@ export function StopProject(arg1:string):Promise<void>;
 
 export function SwitchProjectGitBranch(arg1:string,arg2:string):Promise<main.GitBranchState>;
 
+export function SyncProjectGitWithMain(arg1:string):Promise<main.GitBranchState>;
+
 export function TerminatePortOwnerAndRun(arg1:string,arg2:number,arg3:number):Promise<main.RunResult>;

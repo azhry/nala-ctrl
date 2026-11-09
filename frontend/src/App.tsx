@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, FormEvent, RefObject, SetStateAction } from 'react';
-import { ChooseFolder, CreateConfig, FixDocker, GetHeadlessAPIStatus, GetProjectDetails, GetProjectGitBranchState, GetWorkspace, RunProject, StartHeadlessAPI, StopHeadlessAPI, StopProject, SwitchProjectGitBranch, TerminatePortOwnerAndRun } from '../wailsjs/go/main/ProjectManager';
+import { ChooseFolder, CreateConfig, FixDocker, GetHeadlessAPIStatus, GetProjectDetails, GetProjectGitBranchState, GetWorkspace, RunProject, StartHeadlessAPI, StopHeadlessAPI, StopProject, SyncProjectGitWithMain, SwitchProjectGitBranch, TerminatePortOwnerAndRun } from '../wailsjs/go/main/ProjectManager';
 import { EventsOn } from '../wailsjs/runtime/runtime';
 import { Icon } from './icons';
 import type { CreateProjectInput, GitBranchState, ProcessIdentity, Project, ProjectDetails, ProjectLogEvent, ProjectStateEvent, WorkspaceState } from './types';
@@ -856,6 +856,7 @@ function ProjectBranchControl({ project }: { project: Project }) {
   const [selectedBranch, setSelectedBranch] = useState('');
   const [loading, setLoading] = useState(true);
   const [switching, setSwitching] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
   const requestVersion = useRef(0);
@@ -888,6 +889,7 @@ function ProjectBranchControl({ project }: { project: Project }) {
     setError('');
     setStatus('');
     setSwitching(false);
+    setSyncing(false);
     void refreshBranchState();
     return () => { requestVersion.current += 1; };
   }, [refreshBranchState]);
@@ -899,8 +901,16 @@ function ProjectBranchControl({ project }: { project: Project }) {
     branchState?.available
     && !loading
     && !switching
+    && !syncing
     && selectedBranch
     && selectedBranch !== branchState.currentBranch,
+  );
+  const canSync = Boolean(
+    branchState?.available
+    && branchState.currentBranch
+    && !loading
+    && !switching
+    && !syncing,
   );
 
   const switchBranch = async () => {
@@ -943,6 +953,46 @@ function ProjectBranchControl({ project }: { project: Project }) {
     }
   };
 
+  const syncWithMain = async () => {
+    if (!canSync || !branchState?.currentBranch) return;
+
+    const checkedOutBranch = branchState.currentBranch;
+    const version = requestVersion.current;
+    setSyncing(true);
+    setError('');
+    setStatus('Syncing the checked-out branch with main…');
+
+    try {
+      let syncedState: GitBranchState;
+      try {
+        syncedState = await SyncProjectGitWithMain(projectId);
+      } catch (caught) {
+        if (requestVersion.current !== version) return;
+        setError(`Could not sync ${checkedOutBranch} with main: ${errorMessage(caught)}`);
+        setStatus('');
+        return;
+      }
+
+      if (requestVersion.current !== version) return;
+      setBranchState(syncedState);
+      setSelectedBranch(syncedState.currentBranch || syncedState.branches[0] || '');
+
+      try {
+        const refreshed = await GetProjectGitBranchState(projectId);
+        if (requestVersion.current !== version) return;
+        setBranchState(refreshed);
+        setSelectedBranch(refreshed.currentBranch || refreshed.branches[0] || '');
+        setStatus(`Synced ${refreshed.currentBranch || syncedState.currentBranch || checkedOutBranch} with main.`);
+      } catch (caught) {
+        if (requestVersion.current !== version) return;
+        setError(`Synced ${syncedState.currentBranch || checkedOutBranch} with main, but couldn't refresh branch details: ${errorMessage(caught)}`);
+        setStatus('');
+      }
+    } finally {
+      if (requestVersion.current === version) setSyncing(false);
+    }
+  };
+
   return (
     <section className="branch-control" aria-labelledby="branch-control-title">
       <div className="branch-control-summary">
@@ -977,15 +1027,27 @@ function ProjectBranchControl({ project }: { project: Project }) {
                 setError('');
                 setStatus('');
               }}
-              disabled={loading || switching || !branchOptions.length}
+              disabled={loading || switching || syncing || !branchOptions.length}
               aria-describedby="project-branch-feedback"
             >
               {!branchOptions.length && <option value="">No local branches found</option>}
               {branchOptions.map((branch) => <option key={branch} value={branch}>{branch}</option>)}
             </select>
-            <button className="secondary-button branch-switch-button" type="button" onClick={() => void switchBranch()} disabled={!canSwitch}>
-              {switching ? 'Switching…' : 'Switch branch'}
-            </button>
+            <div className="branch-control-actions">
+              <button className="secondary-button branch-switch-button" type="button" onClick={() => void switchBranch()} disabled={!canSwitch}>
+                {switching ? 'Switching…' : 'Switch branch'}
+              </button>
+              <button
+                className="secondary-button branch-sync-button"
+                type="button"
+                onClick={() => void syncWithMain()}
+                disabled={!canSync}
+                aria-busy={syncing}
+                aria-describedby="project-branch-feedback"
+              >
+                {syncing ? 'Syncing…' : 'Sync with main'}
+              </button>
+            </div>
           </div>
           <p
             id="project-branch-feedback"
@@ -993,7 +1055,7 @@ function ProjectBranchControl({ project }: { project: Project }) {
             role={error ? 'alert' : 'status'}
             aria-live={error ? 'assertive' : 'polite'}
           >
-            {error || status || (branchState.currentBranch ? '' : 'No branch is currently checked out.')}
+            {error || status || (branchState.currentBranch ? '' : 'No branch is currently checked out. Sync with main requires a named local branch.')}
           </p>
         </>
       ) : (
