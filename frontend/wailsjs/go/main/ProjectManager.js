@@ -54,6 +54,10 @@ export function SwitchProjectGitBranch(arg1, arg2) {
   return window['go']['main']['ProjectManager']['SwitchProjectGitBranch'](arg1, arg2);
 }
 
+export function SyncProjectGitWithMain(arg1) {
+  return window['go']['main']['ProjectManager']['SyncProjectGitWithMain'](arg1);
+}
+
 export function TerminatePortOwnerAndRun(arg1, arg2, arg3) {
   return window['go']['main']['ProjectManager']['TerminatePortOwnerAndRun'](arg1, arg2, arg3);
 }

@@ -120,6 +120,10 @@ func (p *ProjectManager) SwitchProjectGitBranch(projectID, branchName string) (*
 	return p.manager.SwitchProjectGitBranch(projectID, branchName)
 }
 
+func (p *ProjectManager) SyncProjectGitWithMain(projectID string) (*GitBranchState, error) {
+	return p.manager.SyncProjectGitWithMain(projectID)
+}
+
 func (p *ProjectManager) RunProject(projectID string) (RunResult, error) {
 	return p.manager.RunProject(projectID)
 }

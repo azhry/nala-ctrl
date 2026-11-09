@@ -3,7 +3,9 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -65,6 +67,80 @@ func (m *Manager) SwitchProjectGitBranch(projectID, branchName string) (*GitBran
 	if _, err := runGit(gitPath, state.RepositoryRoot, "switch", "--ignore-other-worktrees", "--no-guess", "--", branchName); err != nil {
 		return nil, fmt.Errorf("switch to branch %q: %w", branchName, err)
 	}
+	return readGitBranchState(folder)
+}
+
+func (m *Manager) SyncProjectGitWithMain(projectID string) (*GitBranchState, error) {
+	m.gitMu.Lock()
+	defer m.gitMu.Unlock()
+
+	folder, err := m.projectFolder(projectID)
+	if err != nil {
+		return nil, err
+	}
+	state, err := readGitBranchState(folder)
+	if err != nil {
+		return nil, err
+	}
+	if !state.Available {
+		return nil, errors.New("project folder is not inside a Git working tree")
+	}
+	if state.CurrentBranch == "" {
+		return nil, errors.New("sync with main requires a checked-out branch; the working tree is detached")
+	}
+
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		return nil, fmt.Errorf("Git is not available on PATH: %w", err)
+	}
+	status, err := runGit(gitPath, state.RepositoryRoot, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return nil, fmt.Errorf("check the Git working tree before syncing: %w", err)
+	}
+	if status != "" {
+		return nil, errors.New("working tree has uncommitted changes; commit or move them before syncing with main")
+	}
+	inProgress, err := gitOperationInProgress(gitPath, state.RepositoryRoot)
+	if err != nil {
+		return nil, fmt.Errorf("check for another Git operation before syncing: %w", err)
+	}
+	if inProgress {
+		return nil, errors.New("another Git operation is in progress; finish or abort it before syncing with main")
+	}
+
+	if err := runGitQuiet(gitPath, state.RepositoryRoot, "fetch", "--no-tags", "origin", "refs/heads/main"); err != nil {
+		return nil, errors.New("fetch origin/main failed; check that the origin remote has a reachable main branch")
+	}
+
+	currentBranch, err := runGit(gitPath, state.RepositoryRoot, "branch", "--show-current")
+	if err != nil {
+		return nil, errors.New("could not confirm the checked-out branch after fetching origin/main")
+	}
+	if currentBranch != state.CurrentBranch {
+		return nil, errors.New("the checked-out branch changed while fetching; no merge was attempted")
+	}
+	status, err = runGit(gitPath, state.RepositoryRoot, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return nil, errors.New("could not confirm the Git working tree after fetching origin/main")
+	}
+	if status != "" {
+		return nil, errors.New("the working tree changed while fetching; no merge was attempted")
+	}
+
+	if err := runGitQuiet(gitPath, state.RepositoryRoot, "merge", "--no-edit", "FETCH_HEAD"); err != nil {
+		unmerged, unmergedErr := runGit(gitPath, state.RepositoryRoot, "ls-files", "--unmerged")
+		conflicted := unmergedErr == nil && unmerged != ""
+		if gitRefExists(gitPath, state.RepositoryRoot, "MERGE_HEAD") {
+			if abortErr := runGitQuiet(gitPath, state.RepositoryRoot, "merge", "--abort"); abortErr != nil {
+				return nil, errors.New("merge of origin/main failed and Git could not abort it; finish or abort the merge manually")
+			}
+		}
+		if conflicted {
+			return nil, errors.New("merge of origin/main conflicted; the merge was aborted and the checked-out branch was left unchanged")
+		}
+		return nil, errors.New("merge of origin/main failed; any in-progress merge was aborted")
+	}
+
 	return readGitBranchState(folder)
 }
 
@@ -131,4 +207,36 @@ func runGit(gitPath, folder string, args ...string) (string, error) {
 		return "", fmt.Errorf("%s: %w: %s", strings.Join(args, " "), err, details)
 	}
 	return strings.TrimSpace(string(output)), nil
+}
+
+func runGitQuiet(gitPath, folder string, args ...string) error {
+	commandArgs := append([]string{"-C", folder}, args...)
+	return exec.Command(gitPath, commandArgs...).Run()
+}
+
+func gitRefExists(gitPath, folder, ref string) bool {
+	return runGitQuiet(gitPath, folder, "rev-parse", "--quiet", "--verify", ref) == nil
+}
+
+func gitOperationInProgress(gitPath, repositoryRoot string) (bool, error) {
+	for _, ref := range []string{"MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"} {
+		if gitRefExists(gitPath, repositoryRoot, ref) {
+			return true, nil
+		}
+	}
+	for _, stateDirectory := range []string{"rebase-merge", "rebase-apply"} {
+		path, err := runGit(gitPath, repositoryRoot, "rev-parse", "--git-path", stateDirectory)
+		if err != nil {
+			return false, err
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(repositoryRoot, path)
+		}
+		if _, err := os.Stat(path); err == nil {
+			return true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
+	}
+	return false, nil
 }
