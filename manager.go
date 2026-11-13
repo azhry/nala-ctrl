@@ -820,10 +820,10 @@ func (m *Manager) monitorManagedProcess(serviceID string, spec projectSpec, mana
 		}
 
 		if recovered {
-			if rootCreateTime > 0 && processIdentityMatches(rootPID, rootCreateTime) {
-				continue
-			}
-			if rootCreateTime <= 0 && configuredServiceProcessMatches(rootPID, spec) {
+			currentIdentity := processIdentity(rootPID)
+			identityMatches := rootCreateTime > 0 && currentIdentity.CreateTime == rootCreateTime
+			commandMatches := configuredServiceProcessMatches(rootPID, spec)
+			if identityMatches || (commandMatches && (rootCreateTime <= 0 || currentIdentity.CreateTime <= 0 || currentIdentity.CreateTime == rootCreateTime)) {
 				continue
 			}
 		}
