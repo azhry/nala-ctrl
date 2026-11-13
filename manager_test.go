@@ -292,6 +292,58 @@ func TestServicesInOneConfigKeepIndependentProcessesAndLogs(t *testing.T) {
 	}
 }
 
+func TestRefreshProjectsAddsServicesAndDefersRunningServiceChanges(t *testing.T) {
+	folder := projectTestFolder(t, "refresh-project")
+	initialRun := longRunningTestCommand()
+	updatedRun := initialRun + " updated"
+	writeConfig := func(run, extraService string) {
+		t.Helper()
+		config := fmt.Sprintf("projects:\n  backend:\n    cwd: .\n    run: %q\n%s", run, extraService)
+		if err := os.WriteFile(filepath.Join(folder, configFilename), []byte(config), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeConfig(initialRun, "")
+
+	manager := newTestManager(t)
+	state, err := manager.LoadFolder(folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := state.Projects[0].Services[0]
+	t.Cleanup(func() { _ = manager.StopAll() })
+	if result, err := manager.RunProject(backend.ID); err != nil || !result.Started {
+		t.Fatalf("start backend = %#v, error = %v", result, err)
+	}
+
+	writeConfig(updatedRun, fmt.Sprintf("  worker:\n    cwd: .\n    run: %q\n", longRunningTestCommand()))
+	changedFolders := manager.RefreshProjects()
+	if len(changedFolders) != 1 || changedFolders[0] != folder {
+		t.Fatalf("changed folders = %v, want %q", changedFolders, folder)
+	}
+	state = manager.Workspace()
+	if len(state.Projects) != 1 || len(state.Projects[0].Services) != 2 {
+		t.Fatalf("services after refresh = %#v, want backend and worker", state.Projects)
+	}
+	if current := manager.services[backend.ID].Run; current != initialRun {
+		t.Fatalf("running backend command = %q, want original command %q until it stops", current, initialRun)
+	}
+	if details, err := manager.GetProjectDetails(backend.ID); err != nil || !details.Running {
+		t.Fatalf("backend details after refresh = %#v, error = %v; want still running", details, err)
+	}
+
+	if err := manager.StopProject(backend.ID); err != nil {
+		t.Fatal(err)
+	}
+	changedFolders = manager.RefreshProjects()
+	if len(changedFolders) != 1 || changedFolders[0] != folder {
+		t.Fatalf("changed folders after stop = %v, want %q", changedFolders, folder)
+	}
+	if current := manager.services[backend.ID].Run; current != updatedRun {
+		t.Fatalf("stopped backend command = %q, want updated command %q", current, updatedRun)
+	}
+}
+
 func TestProjectStateEventsCoverSilentExit(t *testing.T) {
 	folder := projectTestFolder(t, "backend")
 	manager := newTestManager(t)

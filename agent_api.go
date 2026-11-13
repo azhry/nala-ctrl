@@ -301,6 +301,11 @@ func newAgentAPIRoutes(manager *Manager, mode string, onWorkspaceChanged func(st
 		}{OK: true, Mode: mode})
 	})
 	mux.HandleFunc("GET /v1/workspace", func(w http.ResponseWriter, _ *http.Request) {
+		for _, folder := range manager.RefreshProjects() {
+			if onWorkspaceChanged != nil {
+				onWorkspaceChanged(folder)
+			}
+		}
 		writeAgentJSON(w, http.StatusOK, safeAgentWorkspace(manager.Workspace()))
 	})
 	mux.HandleFunc("POST /v1/projects/load", func(w http.ResponseWriter, r *http.Request) {

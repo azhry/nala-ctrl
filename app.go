@@ -16,12 +16,16 @@ import (
 // folders explicitly added from the app, with separate services from each
 // folder's nala.yml.
 type ProjectManager struct {
-	ctx         context.Context
-	manager     *Manager
-	agentAPI    *http.Server
-	headlessAPI *headlessAPIController
-	dockerFixMu sync.Mutex
+	ctx                 context.Context
+	manager             *Manager
+	agentAPI            *http.Server
+	headlessAPI         *headlessAPIController
+	configRefreshCancel context.CancelFunc
+	configRefreshDone   chan struct{}
+	dockerFixMu         sync.Mutex
 }
+
+const projectConfigRefreshInterval = 2 * time.Second
 
 func NewProjectManager() *ProjectManager {
 	manager := &ProjectManager{manager: NewManager()}
@@ -31,6 +35,22 @@ func NewProjectManager() *ProjectManager {
 
 func (p *ProjectManager) startup(ctx context.Context) {
 	p.ctx = ctx
+	refreshCtx, cancelRefresh := context.WithCancel(ctx)
+	p.configRefreshCancel = cancelRefresh
+	p.configRefreshDone = make(chan struct{})
+	go func() {
+		defer close(p.configRefreshDone)
+		ticker := time.NewTicker(projectConfigRefreshInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-refreshCtx.Done():
+				return
+			case <-ticker.C:
+				p.refreshProjectConfigs()
+			}
+		}
+	}()
 	p.manager.SetLogHandler(func(event ProjectLogEvent) {
 		runtime.EventsEmit(p.ctx, projectLogEventName, event)
 	})
@@ -62,7 +82,17 @@ func (p *ProjectManager) emitWorkspaceChanged(folder string) {
 	}
 }
 
+func (p *ProjectManager) refreshProjectConfigs() {
+	for _, folder := range p.manager.RefreshProjects() {
+		p.emitWorkspaceChanged(folder)
+	}
+}
+
 func (p *ProjectManager) shutdown(ctx context.Context) {
+	if p.configRefreshCancel != nil {
+		p.configRefreshCancel()
+		<-p.configRefreshDone
+	}
 	if p.agentAPI != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		if err := p.agentAPI.Shutdown(shutdownCtx); err != nil {
@@ -102,6 +132,7 @@ func (p *ProjectManager) ChooseFolder() (*WorkspaceState, error) {
 }
 
 func (p *ProjectManager) GetWorkspace() *WorkspaceState {
+	p.refreshProjectConfigs()
 	return p.manager.Workspace()
 }
 
