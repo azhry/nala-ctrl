@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -243,10 +244,115 @@ func (m *Manager) LoadFolder(folder string) (*WorkspaceState, error) {
 					}
 				}
 			}
-			m.addProjectLocked(loaded.project, loaded.specs)
 		}
+		m.refreshProjectLocked(loaded)
 	}
 	return m.workspaceLocked(), nil
+}
+
+func (m *Manager) RefreshProjects() []string {
+	m.restoreSavedProjectsOnce()
+
+	m.mu.RLock()
+	folders := make([]string, 0, len(m.projects))
+	for _, project := range m.projects {
+		folders = append(folders, project.Folder)
+	}
+	m.mu.RUnlock()
+	sort.Strings(folders)
+
+	changedFolders := make([]string, 0)
+	for _, folder := range folders {
+		loaded, err := readProjectFolder(folder)
+		if err != nil || loaded.needsConfig {
+			continue
+		}
+
+		m.mu.Lock()
+		changed := m.refreshProjectLocked(loaded)
+		m.mu.Unlock()
+		if changed {
+			changedFolders = append(changedFolders, loaded.folder)
+		}
+	}
+	return changedFolders
+}
+
+func (m *Manager) refreshProjectLocked(loaded loadedProjectFolder) bool {
+	projectID := loaded.project.ID
+	currentProject, exists := m.projects[projectID]
+	if !exists {
+		m.addProjectLocked(loaded.project, loaded.specs)
+		return true
+	}
+
+	currentSpecs := make(map[string]projectSpec)
+	for serviceID, spec := range m.services {
+		if spec.ProjectID == projectID {
+			currentSpecs[serviceID] = spec
+		}
+	}
+
+	mergedSpecs := make(map[string]projectSpec, len(loaded.specs)+len(currentSpecs))
+	servicesByID := make(map[string]Service, len(loaded.specs)+len(currentSpecs))
+	for _, service := range loaded.project.Services {
+		spec := loaded.specs[service.ID]
+		if current, alreadyLoaded := currentSpecs[service.ID]; alreadyLoaded && m.serviceActiveLocked(service.ID) {
+			spec = current
+		}
+		mergedSpecs[service.ID] = spec
+		servicesByID[service.ID] = spec.Service
+	}
+
+	var retainedRunningServices []Service
+	for serviceID, spec := range currentSpecs {
+		if _, stillConfigured := mergedSpecs[serviceID]; stillConfigured || !m.serviceActiveLocked(serviceID) {
+			continue
+		}
+		mergedSpecs[serviceID] = spec
+		servicesByID[serviceID] = spec.Service
+		retainedRunningServices = append(retainedRunningServices, spec.Service)
+	}
+	sort.Slice(retainedRunningServices, func(i, j int) bool {
+		return strings.ToLower(retainedRunningServices[i].Name) < strings.ToLower(retainedRunningServices[j].Name)
+	})
+
+	project := loaded.project
+	project.Services = make([]Service, 0, len(servicesByID))
+	for _, service := range loaded.project.Services {
+		project.Services = append(project.Services, servicesByID[service.ID])
+	}
+	project.Services = append(project.Services, retainedRunningServices...)
+
+	if reflect.DeepEqual(currentProject, project) && reflect.DeepEqual(currentSpecs, mergedSpecs) {
+		return false
+	}
+	for serviceID := range currentSpecs {
+		if _, stillLoaded := mergedSpecs[serviceID]; !stillLoaded {
+			delete(m.services, serviceID)
+		}
+	}
+	for serviceID, spec := range mergedSpecs {
+		m.services[serviceID] = spec
+	}
+	m.projects[projectID] = project
+	return true
+}
+
+func (m *Manager) serviceActiveLocked(serviceID string) bool {
+	if m.starting[serviceID] {
+		return true
+	}
+	process := m.running[serviceID]
+	if process == nil {
+		return false
+	}
+	select {
+	case <-process.done:
+		return false
+	default:
+		return true
+	}
 }
 
 type loadedProjectFolder struct {

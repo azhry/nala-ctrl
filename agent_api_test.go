@@ -198,6 +198,46 @@ func TestAgentAPIWorkspaceOmitsConfiguredRunCommand(t *testing.T) {
 	}
 }
 
+func TestAgentAPIWorkspaceRefreshesChangedConfigAndEmitsWorkspaceEvent(t *testing.T) {
+	folder := projectTestFolder(t, "agent-api-refresh-config")
+	writeConfig := func(serviceEntries string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(folder, configFilename), []byte("projects:\n"+serviceEntries), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeConfig("  backend:\n    cwd: .\n    run: echo backend\n")
+	manager := newTestManager(t)
+	if _, err := manager.LoadFolder(folder); err != nil {
+		t.Fatal(err)
+	}
+	writeConfig("  backend:\n    cwd: .\n    run: echo backend\n  worker:\n    cwd: .\n    run: echo worker\n")
+
+	workspaceEvents := make(chan string, 1)
+	handler := newAgentAPIHandlerWithWorkspaceHandler(manager, agentAPIModeHeadless, func(changedFolder string) {
+		workspaceEvents <- changedFolder
+	})
+	response := agentAPIRequest(t, handler, http.MethodGet, "/v1/workspace", "", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("workspace status = %d: %s", response.Code, response.Body.String())
+	}
+	var workspace agentWorkspaceDTO
+	if err := json.Unmarshal(response.Body.Bytes(), &workspace); err != nil {
+		t.Fatal(err)
+	}
+	if len(workspace.Projects) != 1 || len(workspace.Projects[0].Services) != 2 {
+		t.Fatalf("workspace after config edit = %#v, want backend and worker", workspace)
+	}
+	select {
+	case changedFolder := <-workspaceEvents:
+		if changedFolder != folder {
+			t.Fatalf("workspace event folder = %q, want %q", changedFolder, folder)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("workspace refresh did not emit an event for the changed config")
+	}
+}
+
 func TestAgentAPIProjectLoadRegistersOnlyExplicitFolder(t *testing.T) {
 	folder := projectTestFolder(t, "agent-api-explicit-load")
 	if err := os.WriteFile(filepath.Join(folder, configFilename), []byte("projects:\n  backend:\n    cwd: .\n    run: echo API_PRIVATE_COMMAND_MARKER\n"), 0644); err != nil {

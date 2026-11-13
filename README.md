@@ -6,6 +6,8 @@ Nala Ctrl is a desktop app for running and monitoring configured projects and th
 
 Add project folders that contain `nala.yml`. Each file represents one project, named from its folder basename, and can declare multiple independently managed services. You can add multiple folders and switch between their services while processes keep running. If a file is missing, Nala Ctrl can create a config with an initial service using `cwd` and `run`; `port` is optional and can be inferred from the run command.
 
+When the desktop app is open, it periodically reloads valid edits to loaded `nala.yml` files, so newly added services appear without restarting other services. A running service keeps the configuration it started with until it stops.
+
 ```yaml
 projects:
   backend:
