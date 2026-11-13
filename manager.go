@@ -39,19 +39,26 @@ type Manager struct {
 }
 
 type managedProcess struct {
-	command *exec.Cmd
-	pid     int32
-	done    chan struct{}
+	command          *exec.Cmd
+	pid              int32
+	createTime       int64
+	portOwner        *ProcessIdentity
+	commandExited    bool
+	recovered        bool
+	startedByManager bool
+	done             chan struct{}
 }
 
 type ProcessIdentity struct {
-	PID             int32  `json:"pid"`
-	Name            string `json:"name"`
-	CreateTime      int64  `json:"createTime"`
-	CanTerminate    bool   `json:"canTerminate"`
-	ManagedProject  string `json:"managedProject"`
-	ManagedService  string `json:"managedService"`
-	TerminationNote string `json:"terminationNote"`
+	PID              int32  `json:"pid"`
+	Name             string `json:"name"`
+	CreateTime       int64  `json:"createTime"`
+	CanTerminate     bool   `json:"canTerminate"`
+	ManagedProject   string `json:"managedProject"`
+	ManagedService   string `json:"managedService"`
+	ManagedProjectID string `json:"managedProjectId"`
+	ManagedServiceID string `json:"managedServiceId"`
+	TerminationNote  string `json:"terminationNote"`
 }
 
 type RunResult struct {
@@ -74,6 +81,12 @@ type ProjectDetails struct {
 	PortOwner   *ProcessIdentity `json:"portOwner"`
 	LogLines    []string         `json:"logLines"`
 	LogSize     int64            `json:"logSize"`
+}
+
+type ServiceRuntimeStatus struct {
+	Running   bool             `json:"running"`
+	PID       int32            `json:"pid"`
+	PortOwner *ProcessIdentity `json:"portOwner"`
 }
 
 func NewManager() *Manager {
@@ -447,36 +460,22 @@ func (m *Manager) resolveServiceLocked(idOrName string) (string, projectSpec, bo
 
 func (m *Manager) GetProjectDetails(idOrName string) (*ProjectDetails, error) {
 	m.mu.RLock()
-	id, spec, exists := m.resolveServiceLocked(idOrName)
-	managed := m.running[id]
+	_, spec, exists := m.resolveServiceLocked(idOrName)
 	m.mu.RUnlock()
 	if !exists {
 		return nil, fmt.Errorf("service %q is not loaded; choose its folder first or use its service ID when names repeat", idOrName)
+	}
+	status, err := m.GetProjectStatus(idOrName)
+	if err != nil {
+		return nil, err
 	}
 
 	details := &ProjectDetails{
 		ProjectID: spec.ProjectID, ProjectName: spec.ProjectName,
 		ServiceID: spec.ID, ServiceName: spec.Name,
 		CWD: spec.CWD, Run: spec.Run, Port: spec.Port, LogPath: spec.LogPath,
+		Running: status.Running, PID: status.PID, PortOwner: status.PortOwner,
 		LogLines: []string{},
-	}
-	if managed != nil {
-		select {
-		case <-managed.done:
-		default:
-			details.Running = true
-			details.PID = managed.pid
-		}
-	}
-	if details.Port != nil {
-		owner, err := findPortOwner(*details.Port)
-		if err != nil {
-			return nil, fmt.Errorf("inspect port %d: %w", *details.Port, err)
-		}
-		if owner != nil {
-			m.markManagedOwner(owner)
-			details.PortOwner = owner
-		}
 	}
 	lines, size, err := readLogTail(spec.LogPath)
 	if err != nil {
@@ -485,6 +484,118 @@ func (m *Manager) GetProjectDetails(idOrName string) (*ProjectDetails, error) {
 	details.LogLines = lines
 	details.LogSize = size
 	return details, nil
+}
+
+func (m *Manager) GetProjectStatus(idOrName string) (*ServiceRuntimeStatus, error) {
+	m.mu.RLock()
+	id, spec, exists := m.resolveServiceLocked(idOrName)
+	managed := m.running[id]
+	starting := m.starting[id]
+	m.mu.RUnlock()
+	if !exists {
+		return nil, fmt.Errorf("service %q is not loaded; choose its folder first or use its service ID when names repeat", idOrName)
+	}
+	status := &ServiceRuntimeStatus{}
+	if managed != nil && !processIsDone(managed.done) {
+		m.mu.RLock()
+		if current := m.running[id]; current == managed {
+			status.Running = true
+			status.PID = managed.statusPIDLocked()
+		}
+		m.mu.RUnlock()
+	}
+	var owner *ProcessIdentity
+	if spec.Port != nil {
+		var err error
+		owner, err = findPortOwner(*spec.Port)
+		if err != nil {
+			return nil, fmt.Errorf("inspect port %d: %w", *spec.Port, err)
+		}
+		if owner != nil {
+			status.PortOwner = owner
+		}
+	}
+	var root *ProcessIdentity
+	var matched, ownerMatched bool
+	if owner != nil {
+		root, matched = findConfiguredServiceProcess(spec, owner.PID)
+		ownerMatched = matched
+		if matched && root != nil && status.Running && managed != nil && root.PID == managed.pid &&
+			root.CreateTime == managed.createTime {
+			m.setManagedPortOwner(id, managed, owner)
+			status.PID = owner.PID
+		}
+	}
+	if !status.Running && !starting {
+		if !matched {
+			root, matched = findConfiguredServiceProcess(spec, 0)
+		}
+		if matched && root != nil && root.PID > 4 {
+			var matchedOwner *ProcessIdentity
+			if ownerMatched {
+				matchedOwner = owner
+			}
+			managed = m.adoptConfiguredProcess(id, spec, root, matchedOwner)
+			if managed != nil && !processIsDone(managed.done) {
+				status.Running = true
+				m.mu.RLock()
+				status.PID = managed.statusPIDLocked()
+				m.mu.RUnlock()
+			}
+		}
+	}
+	if status.PortOwner != nil {
+		m.markManagedOwner(status.PortOwner)
+	}
+	return status, nil
+}
+
+func processIsDone(done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *managedProcess) statusPIDLocked() int32 {
+	if p.portOwner != nil {
+		return p.portOwner.PID
+	}
+	return p.pid
+}
+
+func (m *Manager) adoptConfiguredProcess(serviceID string, spec projectSpec, root, owner *ProcessIdentity) *managedProcess {
+	var managedOwner *ProcessIdentity
+	if owner != nil {
+		ownerCopy := *owner
+		managedOwner = &ownerCopy
+	}
+	process := &managedProcess{
+		pid: root.PID, createTime: root.CreateTime, portOwner: managedOwner,
+		recovered: true, commandExited: true, done: make(chan struct{}),
+	}
+	m.mu.Lock()
+	if m.starting[serviceID] {
+		m.mu.Unlock()
+		return nil
+	}
+	if existing := m.running[serviceID]; existing != nil && !processIsDone(existing.done) {
+		m.mu.Unlock()
+		return existing
+	}
+	m.running[serviceID] = process
+	m.mu.Unlock()
+	m.publishState(ProjectStateEvent{ProjectID: spec.ProjectID, ProjectName: spec.ProjectName, ServiceID: spec.ID, ServiceName: spec.Name, Running: true, PID: process.statusPIDLocked()})
+
+	logOffset := int64(0)
+	if info, err := os.Stat(spec.LogPath); err == nil {
+		logOffset = info.Size()
+	}
+	go m.followServiceLog(spec, logOffset, process.done)
+	go m.monitorManagedProcess(serviceID, spec, process)
+	return process
 }
 
 func (m *Manager) beginStart(idOrName string) (string, projectSpec, error) {
@@ -516,6 +627,9 @@ func (m *Manager) finishStart(id string) {
 }
 
 func (m *Manager) RunProject(idOrName string) (RunResult, error) {
+	if _, err := m.GetProjectStatus(idOrName); err != nil {
+		return RunResult{}, err
+	}
 	id, spec, err := m.beginStart(idOrName)
 	if err != nil {
 		return RunResult{}, err
@@ -535,6 +649,9 @@ func (m *Manager) RunProject(idOrName string) (RunResult, error) {
 }
 
 func (m *Manager) TerminatePortOwnerAndRun(idOrName string, pid int32, createTime int64) (RunResult, error) {
+	if _, err := m.GetProjectStatus(idOrName); err != nil {
+		return RunResult{}, err
+	}
 	id, spec, err := m.beginStart(idOrName)
 	if err != nil {
 		return RunResult{}, err
@@ -599,10 +716,12 @@ func (m *Manager) markManagedOwner(owner *ProcessIdentity) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for serviceID, process := range m.running {
-		if process.pid == owner.PID {
+		if process.pid == owner.PID || (process.portOwner != nil && process.portOwner.PID == owner.PID) {
 			if spec, ok := m.services[serviceID]; ok {
 				owner.ManagedProject = spec.ProjectName
 				owner.ManagedService = spec.Name
+				owner.ManagedProjectID = spec.ProjectID
+				owner.ManagedServiceID = spec.ID
 			}
 			return
 		}
@@ -624,48 +743,157 @@ func (m *Manager) startProject(serviceID string, spec projectSpec) (RunResult, e
 	if err != nil {
 		return RunResult{}, fmt.Errorf("open log file: %w", err)
 	}
-	logOutput, err := newProcessLogWriter(logFile, spec.ProjectID, spec.ProjectName, spec.ID, spec.Name, m.publishLog)
+	logInfo, err := logFile.Stat()
 	if err != nil {
 		_ = logFile.Close()
 		return RunResult{}, fmt.Errorf("inspect project log: %w", err)
 	}
 	command := newShellCommand(spec.Run)
 	command.Dir = spec.WorkingDir
-	command.Stdout = logOutput
-	command.Stderr = logOutput
+	command.Stdout = logFile
+	command.Stderr = logFile
 	if err := prepareCommand(command); err != nil {
-		_ = logOutput.Close()
+		_ = logFile.Close()
 		return RunResult{}, err
 	}
 	if err := command.Start(); err != nil {
-		_ = logOutput.Close()
+		_ = logFile.Close()
 		return RunResult{}, fmt.Errorf("start service: %w", err)
 	}
-	process := &managedProcess{command: command, pid: int32(command.Process.Pid), done: make(chan struct{})}
+	processID := int32(command.Process.Pid)
+	processInfo := processIdentity(processID)
+	process := &managedProcess{command: command, pid: processID, createTime: processInfo.CreateTime, startedByManager: true, done: make(chan struct{})}
+	_ = logFile.Close()
 	m.mu.Lock()
 	m.running[serviceID] = process
 	m.mu.Unlock()
 	m.publishState(ProjectStateEvent{ProjectID: spec.ProjectID, ProjectName: spec.ProjectName, ServiceID: spec.ID, ServiceName: spec.Name, Running: true, PID: process.pid})
+	go m.followServiceLog(spec, logInfo.Size(), process.done)
+	go m.monitorManagedProcess(serviceID, spec, process)
 	go func() {
 		_ = command.Wait()
-		_ = logOutput.Close()
 		m.mu.Lock()
 		if m.running[serviceID] == process {
-			delete(m.running, serviceID)
+			process.commandExited = true
 		}
 		m.mu.Unlock()
-		close(process.done)
-		m.publishState(ProjectStateEvent{ProjectID: spec.ProjectID, ProjectName: spec.ProjectName, ServiceID: spec.ID, ServiceName: spec.Name})
 	}()
 	return RunResult{Started: true, PID: process.pid}, nil
 }
 
+func (m *Manager) monitorManagedProcess(serviceID string, spec projectSpec, managed *managedProcess) {
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-managed.done:
+			return
+		case <-ticker.C:
+		}
+
+		m.mu.RLock()
+		if m.running[serviceID] != managed {
+			m.mu.RUnlock()
+			return
+		}
+		commandExited := managed.commandExited
+		recovered := managed.recovered
+		rootPID, rootCreateTime := managed.pid, managed.createTime
+		owner := managed.portOwner
+		m.mu.RUnlock()
+
+		if !commandExited {
+			if spec.Port != nil {
+				currentOwner, err := findPortOwner(*spec.Port)
+				if err == nil && currentOwner != nil {
+					root, matches := findConfiguredServiceProcess(spec, currentOwner.PID)
+					rootMatches := currentOwner.PID == rootPID
+					if matches && root != nil && root.PID == rootPID && (rootCreateTime == 0 || root.CreateTime == rootCreateTime) {
+						rootMatches = true
+					}
+					if rootMatches {
+						m.setManagedPortOwner(serviceID, managed, currentOwner)
+					}
+				}
+			}
+			continue
+		}
+
+		if recovered {
+			if rootCreateTime > 0 && processIdentityMatches(rootPID, rootCreateTime) {
+				continue
+			}
+			if rootCreateTime <= 0 && configuredServiceProcessMatches(rootPID, spec) {
+				continue
+			}
+		}
+		if owner != nil && spec.Port != nil && portStillOwnedBy(*spec.Port, owner) {
+			continue
+		}
+		m.finishManagedProcess(serviceID, spec, managed)
+		return
+	}
+}
+
+func (m *Manager) setManagedPortOwner(serviceID string, managed *managedProcess, owner *ProcessIdentity) {
+	m.mu.Lock()
+	if m.running[serviceID] != managed || processIsDone(managed.done) {
+		m.mu.Unlock()
+		return
+	}
+	if managed.portOwner != nil && managed.portOwner.PID == owner.PID && managed.portOwner.CreateTime == owner.CreateTime {
+		m.mu.Unlock()
+		return
+	}
+	managedOwner := *owner
+	service := m.services[serviceID]
+	managedOwner.ManagedProject = service.ProjectName
+	managedOwner.ManagedService = service.Name
+	managedOwner.ManagedProjectID = service.ProjectID
+	managedOwner.ManagedServiceID = service.ID
+	managed.portOwner = &managedOwner
+	managed.recovered = true
+	m.mu.Unlock()
+	m.publishState(ProjectStateEvent{ProjectID: service.ProjectID, ProjectName: service.ProjectName, ServiceID: service.ID, ServiceName: service.Name, Running: true, PID: owner.PID})
+}
+
+func (m *Manager) finishManagedProcess(serviceID string, spec projectSpec, managed *managedProcess) {
+	m.mu.Lock()
+	if m.running[serviceID] != managed || processIsDone(managed.done) {
+		m.mu.Unlock()
+		return
+	}
+	delete(m.running, serviceID)
+	close(managed.done)
+	m.mu.Unlock()
+	m.publishState(ProjectStateEvent{ProjectID: spec.ProjectID, ProjectName: spec.ProjectName, ServiceID: spec.ID, ServiceName: spec.Name})
+}
+
+func portStillOwnedBy(port int, expected *ProcessIdentity) bool {
+	owner, err := findPortOwner(port)
+	return err == nil && owner != nil && owner.PID == expected.PID && owner.CreateTime > 0 && owner.CreateTime == expected.CreateTime
+}
+
 func (m *Manager) StopProject(idOrName string) error {
+	if _, err := m.GetProjectStatus(idOrName); err != nil {
+		return err
+	}
 	m.mu.RLock()
-	id, _, exists := m.resolveServiceLocked(idOrName)
+	id, spec, exists := m.resolveServiceLocked(idOrName)
 	var process *managedProcess
 	if exists {
 		process = m.running[id]
+	}
+	rootPID, rootCreateTime := int32(0), int64(0)
+	commandActive := false
+	var owner *ProcessIdentity
+	if process != nil {
+		rootPID, rootCreateTime = process.pid, process.createTime
+		commandActive = !process.commandExited && process.command != nil
+		if process.portOwner != nil {
+			ownerCopy := *process.portOwner
+			owner = &ownerCopy
+		}
 	}
 	m.mu.RUnlock()
 	if process == nil {
@@ -676,27 +904,51 @@ func (m *Manager) StopProject(idOrName string) error {
 		return nil
 	default:
 	}
-	if err := terminateProcessTree(process.pid); err != nil {
-		select {
-		case <-process.done:
-			return nil
-		default:
-			return fmt.Errorf("stop service process %d: %w", process.pid, err)
+	rootIdentity := processIdentity(rootPID)
+	rootAlive := (commandActive && rootCreateTime == 0) || (rootCreateTime > 0 && rootIdentity.CreateTime == rootCreateTime)
+	if !rootAlive && rootCreateTime <= 0 {
+		rootAlive = configuredServiceProcessMatches(rootPID, spec)
+	}
+	if rootAlive {
+		if rootCreateTime > 0 && !rootIdentity.CanTerminate {
+			if rootIdentity.TerminationNote != "" {
+				return fmt.Errorf("cannot safely stop configured service process %d: %s", rootPID, rootIdentity.TerminationNote)
+			}
+			return fmt.Errorf("cannot safely stop configured service process %d", rootPID)
 		}
+		if !commandActive && rootCreateTime <= 0 {
+			return fmt.Errorf("cannot safely stop configured service process %d because its start time could not be verified", rootPID)
+		}
+		if err := terminateProcessTree(rootPID); err != nil {
+			select {
+			case <-process.done:
+				return nil
+			default:
+				return fmt.Errorf("stop service process %d: %w", rootPID, err)
+			}
+		}
+	} else if owner != nil && spec.Port != nil {
+		if err := terminatePortOwner(*spec.Port, owner.PID, owner.CreateTime); err != nil {
+			return err
+		}
+	} else {
+		return nil
 	}
 	select {
 	case <-process.done:
 		return nil
 	case <-time.After(6 * time.Second):
-		return fmt.Errorf("service process %d did not stop", process.pid)
+		return fmt.Errorf("service process %d did not stop", rootPID)
 	}
 }
 
 func (m *Manager) StopAll() error {
 	m.mu.RLock()
 	names := make([]string, 0, len(m.running))
-	for name := range m.running {
-		names = append(names, name)
+	for name, process := range m.running {
+		if process.startedByManager {
+			names = append(names, name)
+		}
 	}
 	m.mu.RUnlock()
 	var failures []string

@@ -14,6 +14,8 @@ export function GetProjectDetails(arg1:string):Promise<main.ProjectDetails>;
 
 export function GetProjectGitBranchState(arg1:string):Promise<main.GitBranchState>;
 
+export function GetProjectStatus(arg1:string):Promise<main.ServiceRuntimeStatus>;
+
 export function GetWorkspace():Promise<main.WorkspaceState>;
 
 export function LoadFolder(arg1:string):Promise<main.WorkspaceState>;
