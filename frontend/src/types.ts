@@ -41,7 +41,15 @@ export interface ProcessIdentity {
   canTerminate: boolean;
   managedProject: string;
   managedService: string;
+  managedProjectId: string;
+  managedServiceId: string;
   terminationNote: string;
+}
+
+export interface ServiceRuntimeStatus {
+  running: boolean;
+  pid: number;
+  portOwner?: ProcessIdentity | null;
 }
 
 export interface RunResult {
