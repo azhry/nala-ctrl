@@ -13,6 +13,7 @@ type HeadlessAPIAction = 'checking' | 'start' | 'stop' | null;
 type HeadlessAPIStatus = { running: boolean; address: string; error?: string };
 const projectLogEventName = 'project:log';
 const projectStateEventName = 'project:state';
+const workspaceChangedEventName = 'workspace:changed';
 
 const emptyWorkspace: WorkspaceState = { folder: '', needsConfig: false, projects: [] };
 
@@ -162,6 +163,59 @@ function App() {
 
     return () => { cancelled = true; };
   }, [selectServiceId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const unsubscribe = EventsOn(workspaceChangedEventName, (folder: string) => {
+      const version = ++workspaceChangeVersion.current;
+      void GetWorkspace().then((next) => {
+        if (cancelled || workspaceChangeVersion.current !== version) return;
+
+        setWorkspaceHydrating(false);
+        setWorkspace(next);
+        setWorkspaceWarnings(workspaceWarningMessages(next));
+        setSetupOpen(next.needsConfig);
+        setPortConflict(null);
+        setPortConflictServiceId('');
+        setConflictError('');
+
+        const targetFolder = folder || next.folder;
+        const previousServiceId = selectedServiceRef.current;
+        const loadedProject = next.projects.find((project) =>
+          sameFolder(project.folder, targetFolder) || sameFolder(project.id, targetFolder));
+        const loadedServiceIds = loadedProject?.services.map((service) => service.id) ?? [];
+        const serviceStillExists = next.projects.some((project) =>
+          project.services.some((service) => service.id === previousServiceId));
+        const firstServiceId = next.projects.flatMap((project) => project.services)[0]?.id ?? '';
+        let nextServiceId = serviceStillExists ? previousServiceId : firstServiceId;
+
+        if (next.needsConfig) {
+          nextServiceId = '';
+          setForm({ cwd: '.', run: 'go run .', port: '' });
+        } else if (loadedServiceIds.length > 0) {
+          nextServiceId = loadedServiceIds.includes(previousServiceId)
+            ? previousServiceId
+            : loadedServiceIds[0];
+        }
+
+        if (nextServiceId !== previousServiceId) setDetails(null);
+        selectServiceId(nextServiceId);
+        if (nextServiceId && nextServiceId === previousServiceId) {
+          void refreshDetails(nextServiceId).catch((caught) => setError(errorMessage(caught)));
+        }
+        setError('');
+      }).catch((caught) => {
+        if (!cancelled && workspaceChangeVersion.current === version) {
+          setError(`Unable to refresh projects loaded through the API: ${errorMessage(caught)}`);
+        }
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [refreshDetails, selectServiceId]);
 
   const setServiceAction = (serviceId: string, action: ServiceAction | null) => {
     setServiceActions((current) => {
