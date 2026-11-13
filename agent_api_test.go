@@ -3,11 +3,14 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -232,6 +235,166 @@ func TestAgentAPIRunStopAndBoundedLogs(t *testing.T) {
 	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"running":true`) {
 		t.Fatalf("service status after stop = %d: %s", response.Code, response.Body.String())
 	}
+}
+
+func TestAgentAPIRunTakesOverConfiguredPortAndStopStopsService(t *testing.T) {
+	port := freeAgentAPITestPort(t)
+	oldOwner := startAgentAPITestPortOwner(t, port)
+	manager, handler, servicePath := newAgentAPITestService(t, port, longRunningTestCommand())
+	t.Cleanup(func() { _ = manager.StopAll() })
+
+	response := agentAPIRequest(t, handler, http.MethodPost, servicePath+"/run", "", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("run status = %d: %s", response.Code, response.Body.String())
+	}
+	var runResult struct {
+		Started           bool  `json:"started"`
+		PID               int32 `json:"pid"`
+		ReplacedPortOwner bool  `json:"replacedPortOwner"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &runResult); err != nil {
+		t.Fatal(err)
+	}
+	if !runResult.Started || runResult.PID <= 0 || !runResult.ReplacedPortOwner {
+		t.Fatalf("run result = %#v", runResult)
+	}
+	if err := oldOwner.Wait(); err == nil {
+		t.Fatal("the original port owner exited without being terminated")
+	}
+	waitForAgentAPITestPortRelease(t, port)
+	response = agentAPIRequest(t, handler, http.MethodGet, servicePath, "", nil)
+	var status agentServiceStatusDTO
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &status) != nil || !status.Running {
+		t.Fatalf("service status after takeover = %d: %s", response.Code, response.Body.String())
+	}
+
+	response = agentAPIRequest(t, handler, http.MethodPost, servicePath+"/stop", "", nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"stopped":true`) {
+		t.Fatalf("stop status = %d: %s", response.Code, response.Body.String())
+	}
+	waitForAgentAPITestPortRelease(t, port)
+}
+
+func TestAgentAPIStopTerminatesConfiguredExternalPortOwner(t *testing.T) {
+	port := freeAgentAPITestPort(t)
+	owner := startAgentAPITestPortOwner(t, port)
+	manager, handler, servicePath := newAgentAPITestService(t, port, longRunningTestCommand())
+	t.Cleanup(func() { _ = manager.StopAll() })
+
+	response := agentAPIRequest(t, handler, http.MethodPost, servicePath+"/stop", "", nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"portOwnerStopped":true`) {
+		t.Fatalf("stop status = %d: %s", response.Code, response.Body.String())
+	}
+	if err := owner.Wait(); err == nil {
+		t.Fatal("the configured port owner exited without being terminated")
+	}
+	waitForAgentAPITestPortRelease(t, port)
+}
+
+func TestAgentAPIRunAndStopRefuseUnsafePortOwner(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	manager, handler, servicePath := newAgentAPITestService(t, port, longRunningTestCommand())
+	t.Cleanup(func() { _ = manager.StopAll() })
+
+	response := agentAPIRequest(t, handler, http.MethodPost, servicePath+"/run", "", nil)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"conflict":true`) {
+		t.Fatalf("run status = %d: %s", response.Code, response.Body.String())
+	}
+	response = agentAPIRequest(t, handler, http.MethodPost, servicePath+"/stop", "", nil)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("stop status = %d: %s", response.Code, response.Body.String())
+	}
+
+	connection, err := net.DialTimeout("tcp", listener.Addr().String(), 500*time.Millisecond)
+	if err != nil {
+		t.Fatalf("unsafe port owner was stopped: %v", err)
+	}
+	_ = connection.Close()
+}
+
+func freeAgentAPITestPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+func startAgentAPITestPortOwner(t *testing.T, port int) *exec.Cmd {
+	t.Helper()
+	t.Setenv("NALA_CTRL_TEST_LISTENER_PORT", strconv.Itoa(port))
+	owner := exec.Command(os.Args[0], "-test.run=^TestPortListenerChild$")
+	if err := owner.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if owner.Process != nil {
+			_ = owner.Process.Kill()
+			_ = owner.Wait()
+		}
+	})
+	waitForAgentAPITestPortOwner(t, port, int32(owner.Process.Pid))
+	return owner
+}
+
+func waitForAgentAPITestPortOwner(t *testing.T, port int, pid int32) {
+	t.Helper()
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		owner, err := findPortOwner(port)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if owner != nil && owner.PID == pid && owner.CanTerminate {
+			return
+		}
+		time.Sleep(40 * time.Millisecond)
+	}
+	owner, _ := findPortOwner(port)
+	t.Fatalf("port %d owner = %#v; want safely terminable PID %d", port, owner, pid)
+}
+
+func waitForAgentAPITestPortRelease(t *testing.T, port int) {
+	t.Helper()
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		owner, err := findPortOwner(port)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if owner == nil {
+			return
+		}
+		time.Sleep(40 * time.Millisecond)
+	}
+	owner, _ := findPortOwner(port)
+	t.Fatalf("port %d still has owner %#v", port, owner)
+}
+
+func newAgentAPITestService(t *testing.T, port int, command string) (*Manager, http.Handler, string) {
+	t.Helper()
+	folder := projectTestFolder(t, "agent-api-port-owner")
+	config := fmt.Sprintf("projects:\n  backend:\n    cwd: .\n    run: %q\n    port: %d\n", command, port)
+	if err := os.WriteFile(filepath.Join(folder, configFilename), []byte(config), 0644); err != nil {
+		t.Fatal(err)
+	}
+	manager := newTestManager(t)
+	state, err := manager.LoadFolder(folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := state.Projects[0].Services[0]
+	return manager, newAgentAPIHandler(manager, agentAPIModeHeadless), "/v1/services/" + url.PathEscape(service.ID)
 }
 
 func TestAgentAPIBranchLookupUsesRegisteredProjectPath(t *testing.T) {

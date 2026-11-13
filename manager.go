@@ -437,26 +437,56 @@ func (m *Manager) TerminatePortOwnerAndRun(idOrName string, pid int32, createTim
 	if spec.Port == nil {
 		return RunResult{}, errors.New("this service has no configured or detected port")
 	}
+	if err := terminatePortOwner(*spec.Port, pid, createTime); err != nil {
+		return RunResult{}, err
+	}
+	return m.startProject(id, spec)
+}
+
+func (m *Manager) StopPortOwner(idOrName string) (bool, error) {
+	id, spec, err := m.beginStart(idOrName)
+	if err != nil {
+		return false, err
+	}
+	defer m.finishStart(id)
+	if spec.Port == nil {
+		return false, nil
+	}
 	owner, err := findPortOwner(*spec.Port)
 	if err != nil {
-		return RunResult{}, fmt.Errorf("recheck port %d: %w", *spec.Port, err)
+		return false, fmt.Errorf("inspect port %d: %w", *spec.Port, err)
+	}
+	if owner == nil {
+		return false, nil
+	}
+	m.markManagedOwner(owner)
+	if err := terminatePortOwner(*spec.Port, owner.PID, owner.CreateTime); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func terminatePortOwner(port int, pid int32, createTime int64) error {
+	owner, err := findPortOwner(port)
+	if err != nil {
+		return fmt.Errorf("recheck port %d: %w", port, err)
 	}
 	if owner == nil || owner.PID != pid || owner.CreateTime != createTime {
-		return RunResult{}, errors.New("the process using this port changed; refresh the project and try again")
+		return errors.New("the process using this port changed; refresh the project and try again")
 	}
 	if !owner.CanTerminate {
 		if owner.TerminationNote == "" {
 			owner.TerminationNote = "The process identity could not be verified, so it cannot be terminated safely."
 		}
-		return RunResult{}, errors.New(owner.TerminationNote)
+		return errors.New(owner.TerminationNote)
 	}
 	if err := terminatePID(owner.PID); err != nil {
-		return RunResult{}, fmt.Errorf("stop process %d: %w", owner.PID, err)
+		return fmt.Errorf("stop process %d: %w", owner.PID, err)
 	}
-	if err := waitForPortRelease(*spec.Port, owner); err != nil {
-		return RunResult{}, err
+	if err := waitForPortRelease(port, owner); err != nil {
+		return err
 	}
-	return m.startProject(id, spec)
+	return nil
 }
 
 func (m *Manager) markManagedOwner(owner *ProcessIdentity) {

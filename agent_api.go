@@ -273,15 +273,24 @@ func newAgentAPIHandler(manager *Manager, mode string) http.Handler {
 			writeAgentAPIError(w, http.StatusInternalServerError, "start_failed", "service could not be started; inspect its configured logs")
 			return
 		}
+		replacedPortOwner := false
 		if result.PortOwner != nil {
-			writeAgentJSON(w, http.StatusConflict, map[string]any{
-				"serviceId": id, "started": false, "conflict": true,
-				"port":    status.Port,
-				"message": "the configured service port is already in use; this API cannot stop its owner",
-			})
-			return
+			owner := result.PortOwner
+			result, err = manager.TerminatePortOwnerAndRun(id, owner.PID, owner.CreateTime)
+			if err != nil {
+				writeAgentJSON(w, http.StatusConflict, map[string]any{
+					"serviceId": id, "started": false, "conflict": true,
+					"port":    status.Port,
+					"message": "the configured service port is in use and its owner could not be stopped safely",
+				})
+				return
+			}
+			replacedPortOwner = true
 		}
-		writeAgentJSON(w, http.StatusOK, map[string]any{"serviceId": id, "started": result.Started, "pid": result.PID})
+		writeAgentJSON(w, http.StatusOK, map[string]any{
+			"serviceId": id, "started": result.Started, "pid": result.PID,
+			"replacedPortOwner": replacedPortOwner,
+		})
 	})
 	mux.HandleFunc("POST /v1/services/{serviceID}/stop", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("serviceID")
@@ -290,15 +299,24 @@ func newAgentAPIHandler(manager *Manager, mode string) http.Handler {
 			writeAgentServiceStatusError(w, err)
 			return
 		}
-		if !status.Running {
-			writeAgentJSON(w, http.StatusOK, map[string]any{"serviceId": id, "stopped": false, "alreadyStopped": true})
+		if status.Running {
+			if err := manager.StopProject(id); err != nil {
+				writeAgentAPIError(w, http.StatusInternalServerError, "stop_failed", "service could not be stopped by this API process")
+				return
+			}
+			writeAgentJSON(w, http.StatusOK, map[string]any{"serviceId": id, "stopped": true})
 			return
 		}
-		if err := manager.StopProject(id); err != nil {
-			writeAgentAPIError(w, http.StatusInternalServerError, "stop_failed", "service could not be stopped by this API process")
+		stoppedPortOwner, err := manager.StopPortOwner(id)
+		if err != nil {
+			writeAgentAPIError(w, http.StatusConflict, "stop_failed", "the configured service port owner could not be stopped safely")
 			return
 		}
-		writeAgentJSON(w, http.StatusOK, map[string]any{"serviceId": id, "stopped": true})
+		if stoppedPortOwner {
+			writeAgentJSON(w, http.StatusOK, map[string]any{"serviceId": id, "stopped": true, "portOwnerStopped": true})
+			return
+		}
+		writeAgentJSON(w, http.StatusOK, map[string]any{"serviceId": id, "stopped": false, "alreadyStopped": true})
 	})
 	mux.HandleFunc("GET /v1/projects/git-branch", func(w http.ResponseWriter, r *http.Request) {
 		values := r.URL.Query()["projectId"]
