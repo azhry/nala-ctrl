@@ -24,10 +24,9 @@ type ProjectManager struct {
 }
 
 func NewProjectManager() *ProjectManager {
-	return &ProjectManager{
-		manager:     NewManager(),
-		headlessAPI: newHeadlessAPIController(defaultAgentAPIListen, NewManager),
-	}
+	manager := &ProjectManager{manager: NewManager()}
+	manager.headlessAPI = newHeadlessAPIControllerForManager(defaultAgentAPIListen, manager.manager, manager.emitWorkspaceChanged)
+	return manager
 }
 
 func (p *ProjectManager) startup(ctx context.Context) {
@@ -42,7 +41,7 @@ func (p *ProjectManager) startup(ctx context.Context) {
 	if err != nil {
 		runtime.LogError(p.ctx, fmt.Sprintf("Nala Ctrl agent API could not start: %v", err))
 	} else {
-		p.agentAPI = newAgentAPIServer(p.manager, agentAPIModeDesktop)
+		p.agentAPI = newAgentAPIServerWithWorkspaceHandler(p.manager, agentAPIModeDesktop, p.emitWorkspaceChanged)
 		go func() {
 			if err := p.agentAPI.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				runtime.LogError(p.ctx, fmt.Sprintf("Nala Ctrl agent API stopped: %v", err))
@@ -54,6 +53,12 @@ func (p *ProjectManager) startup(ctx context.Context) {
 		if _, err := p.headlessAPI.Start(); err != nil {
 			runtime.LogError(p.ctx, fmt.Sprintf("Nala Ctrl headless API could not start: %v", err))
 		}
+	}
+}
+
+func (p *ProjectManager) emitWorkspaceChanged(folder string) {
+	if p.ctx != nil {
+		runtime.EventsEmit(p.ctx, workspaceChangedEventName, folder)
 	}
 }
 

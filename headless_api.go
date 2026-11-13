@@ -19,16 +19,28 @@ type HeadlessAPIStatus struct {
 }
 
 type headlessAPIController struct {
-	mu         sync.Mutex
-	address    string
-	newManager func() *Manager
-	manager    *Manager
-	server     *http.Server
-	lastError  string
+	mu                 sync.Mutex
+	address            string
+	newManager         func() *Manager
+	manager            *Manager
+	ownsManager        bool
+	usesDesktopManager bool
+	onWorkspaceChanged func(string)
+	server             *http.Server
+	lastError          string
 }
 
 func newHeadlessAPIController(address string, newManager func() *Manager) *headlessAPIController {
 	return &headlessAPIController{address: address, newManager: newManager}
+}
+
+func newHeadlessAPIControllerForManager(address string, manager *Manager, onWorkspaceChanged func(string)) *headlessAPIController {
+	return &headlessAPIController{
+		address:            address,
+		manager:            manager,
+		usesDesktopManager: true,
+		onWorkspaceChanged: onWorkspaceChanged,
+	}
 }
 
 func (c *headlessAPIController) Start() (HeadlessAPIStatus, error) {
@@ -45,11 +57,21 @@ func (c *headlessAPIController) Start() (HeadlessAPIStatus, error) {
 		return c.statusLocked(), err
 	}
 	if c.manager == nil {
+		if c.newManager == nil {
+			c.lastError = "headless API has no service manager"
+			return c.statusLocked(), errors.New(c.lastError)
+		}
 		c.manager = c.newManager()
+		c.ownsManager = true
 		c.manager.Workspace()
 	}
 
-	server := newAgentAPIServer(c.manager, agentAPIModeHeadless)
+	var server *http.Server
+	if c.usesDesktopManager {
+		server = newAgentAPIServerWithWorkspaceHandler(c.manager, agentAPIModeDesktop, c.onWorkspaceChanged)
+	} else {
+		server = newAgentAPIServer(c.manager, agentAPIModeHeadless)
+	}
 	c.server = server
 	c.lastError = ""
 	go c.serve(server, listener)
@@ -73,10 +95,11 @@ func (c *headlessAPIController) Stop() (HeadlessAPIStatus, error) {
 	}
 
 	var stopErr error
-	if c.manager != nil {
+	if c.manager != nil && c.ownsManager {
 		stopErr = c.manager.StopAll()
 		if stopErr == nil {
 			c.manager = nil
+			c.ownsManager = false
 		}
 	}
 
@@ -116,7 +139,7 @@ func (c *headlessAPIController) serve(server *http.Server, listener net.Listener
 	}
 	c.server = nil
 	c.lastError = fmt.Sprintf("headless API stopped: %v", err)
-	if c.manager != nil {
+	if c.manager != nil && c.ownsManager {
 		if stopErr := c.manager.StopAll(); stopErr != nil {
 			c.lastError = errors.Join(errors.New(c.lastError), stopErr).Error()
 		}

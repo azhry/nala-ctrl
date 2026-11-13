@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -60,6 +61,113 @@ func TestAgentAPIHealthReportsHeadlessMode(t *testing.T) {
 	if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != `{"ok":true,"mode":"headless"}` {
 		t.Fatalf("headless health = %d %s, want the headless API mode", response.Code, response.Body.String())
 	}
+}
+
+func TestStandaloneHeadlessAPIUsesDesktopManagerWhenAvailable(t *testing.T) {
+	folder := projectTestFolder(t, "agent-api-forwarded-manager")
+	command := longRunningTestCommand()
+	config := fmt.Sprintf("projects:\n  backend:\n    cwd: .\n    run: %q\n", command)
+	if err := os.WriteFile(filepath.Join(folder, configFilename), []byte(config), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	desktopManager := newTestManager(t)
+	workspaceEvents := make(chan string, 1)
+	desktopServer := httptest.NewServer(newAgentAPIHandlerWithWorkspaceHandler(desktopManager, agentAPIModeDesktop, func(folder string) {
+		workspaceEvents <- folder
+	}))
+	defer desktopServer.Close()
+	desktopAddress := strings.TrimPrefix(desktopServer.URL, "http://")
+
+	headlessManager := newTestManager(t)
+	headlessServer := httptest.NewServer(newHeadlessAgentAPIHandlerWithDesktopAddress(headlessManager, nil, desktopAddress))
+	defer headlessServer.Close()
+	client := headlessServer.Client()
+
+	statusCode, body := doAgentAPIHTTP(t, client, headlessServer.URL, http.MethodGet, "/v1/health", "")
+	if statusCode != http.StatusOK || strings.TrimSpace(string(body)) != `{"ok":true,"mode":"desktop"}` {
+		t.Fatalf("forwarded headless health = %d %s, want desktop mode", statusCode, body)
+	}
+
+	loadBody, err := json.Marshal(map[string]string{"folder": folder})
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusCode, body = doAgentAPIHTTP(t, client, headlessServer.URL, http.MethodPost, "/v1/projects/load", string(loadBody))
+	if statusCode != http.StatusOK {
+		t.Fatalf("forwarded project load = %d %s", statusCode, body)
+	}
+	select {
+	case changedFolder := <-workspaceEvents:
+		if filepath.Clean(changedFolder) != filepath.Clean(folder) {
+			t.Fatalf("workspace change folder = %q, want %q", changedFolder, folder)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("desktop API did not emit a workspace change after loading the project")
+	}
+
+	service := desktopManager.Workspace().Projects[0].Services[0]
+	servicePath := "/v1/services/" + url.PathEscape(service.ID)
+	t.Cleanup(func() { _ = desktopManager.StopAll() })
+
+	statusCode, body = doAgentAPIHTTP(t, client, headlessServer.URL, http.MethodPost, servicePath+"/run", "")
+	if statusCode != http.StatusOK || !strings.Contains(string(body), `"started":true`) {
+		t.Fatalf("forwarded service run = %d %s", statusCode, body)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		details, err := desktopManager.GetProjectDetails(service.ID)
+		if err == nil && details.Running {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	details, err := desktopManager.GetProjectDetails(service.ID)
+	if err != nil || !details.Running {
+		t.Fatalf("desktop manager did not observe the headless API process: details=%+v error=%v", details, err)
+	}
+	headlessManager.mu.RLock()
+	_, registeredInHeadlessManager := headlessManager.services[service.ID]
+	headlessManager.mu.RUnlock()
+	if registeredInHeadlessManager {
+		t.Fatal("standalone headless manager unexpectedly registered the forwarded project")
+	}
+
+	statusCode, body = doAgentAPIHTTP(t, client, headlessServer.URL, http.MethodPost, servicePath+"/stop", "")
+	if statusCode != http.StatusOK || !strings.Contains(string(body), `"stopped":true`) {
+		t.Fatalf("forwarded service stop = %d %s", statusCode, body)
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		details, err = desktopManager.GetProjectDetails(service.ID)
+		if err == nil && !details.Running {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("desktop manager still reports the stopped headless API process as running: %+v", details)
+}
+
+func doAgentAPIHTTP(t *testing.T, client *http.Client, baseURL, method, path, body string) (int, []byte) {
+	t.Helper()
+	request, err := http.NewRequest(method, baseURL+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body != "" {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response.StatusCode, responseBody
 }
 
 func TestAgentAPIWorkspaceOmitsConfiguredRunCommand(t *testing.T) {

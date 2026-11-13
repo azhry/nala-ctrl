@@ -1,9 +1,14 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -83,6 +88,72 @@ func TestHeadlessAPIControllerDoesNotTakeOccupiedPort(t *testing.T) {
 	if err == nil {
 		otherListener.Close()
 		t.Fatal("headless API released an occupied port it did not own")
+	}
+}
+
+func TestInAppHeadlessAPIUsesDesktopManagerAndStopsOnlyListener(t *testing.T) {
+	folder := projectTestFolder(t, "headless-api-shared-manager")
+	command := longRunningTestCommand()
+	config := fmt.Sprintf("projects:\n  backend:\n    cwd: .\n    run: %q\n", command)
+	if err := os.WriteFile(filepath.Join(folder, configFilename), []byte(config), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := newTestManager(t)
+	t.Cleanup(func() { _ = manager.StopAll() })
+	workspace, err := manager.LoadFolder(folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := workspace.Projects[0].Services[0]
+	if _, err := manager.RunProject(service.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	address := unusedLoopbackAddress(t)
+	controller := newHeadlessAPIControllerForManager(address, manager, nil)
+	t.Cleanup(func() { _, _ = controller.Stop() })
+	status, err := controller.Start()
+	if err != nil || !status.Running {
+		t.Fatalf("start shared-manager API = %+v, %v", status, err)
+	}
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	response, err := client.Get("http://" + address + "/v1/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthBody, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || strings.TrimSpace(string(healthBody)) != `{"ok":true,"mode":"desktop"}` {
+		t.Fatalf("in-app headless health = %d %s, want desktop mode", response.StatusCode, healthBody)
+	}
+
+	servicePath := "/v1/services/" + url.PathEscape(service.ID)
+	response, err = client.Get("http://" + address + servicePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var apiStatus agentServiceStatusDTO
+	if err := json.NewDecoder(response.Body).Decode(&apiStatus); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || !apiStatus.Running {
+		t.Fatalf("in-app headless service status = %d %+v, want shared running state", response.StatusCode, apiStatus)
+	}
+
+	status, err = controller.Stop()
+	if err != nil || status.Running {
+		t.Fatalf("stop shared-manager API listener = %+v, %v", status, err)
+	}
+	details, err := manager.GetProjectDetails(service.ID)
+	if err != nil || !details.Running {
+		t.Fatalf("stopping the API listener changed desktop service ownership: details=%+v error=%v", details, err)
 	}
 }
 

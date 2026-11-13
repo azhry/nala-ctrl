@@ -9,6 +9,7 @@ import (
 
 const projectLogEventName = "project:log"
 const projectStateEventName = "project:state"
+const workspaceChangedEventName = "workspace:changed"
 
 type ProjectLogEvent struct {
 	ProjectID   string `json:"projectId"`

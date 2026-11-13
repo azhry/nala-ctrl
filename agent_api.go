@@ -10,6 +10,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -149,7 +151,7 @@ func serveAgentAPI(address string, stdout io.Writer) error {
 	}
 	manager := NewManager()
 	manager.Workspace()
-	server := newAgentAPIServer(manager, agentAPIModeHeadless)
+	server := newHeadlessAgentAPIServer(manager, nil)
 	fmt.Fprintf(stdout, "Nala Ctrl agent API listening on http://%s\n", listener.Addr())
 
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -187,8 +189,20 @@ func listenAgentAPI(address string) (net.Listener, error) {
 }
 
 func newAgentAPIServer(manager *Manager, mode string) *http.Server {
+	return newAgentAPIServerWithHandler(newAgentAPIHandler(manager, mode))
+}
+
+func newAgentAPIServerWithWorkspaceHandler(manager *Manager, mode string, onWorkspaceChanged func(string)) *http.Server {
+	return newAgentAPIServerWithHandler(newAgentAPIHandlerWithWorkspaceHandler(manager, mode, onWorkspaceChanged))
+}
+
+func newHeadlessAgentAPIServer(manager *Manager, onWorkspaceChanged func(string)) *http.Server {
+	return newAgentAPIServerWithHandler(newHeadlessAgentAPIHandler(manager, onWorkspaceChanged))
+}
+
+func newAgentAPIServerWithHandler(handler http.Handler) *http.Server {
 	return &http.Server{
-		Handler:           newAgentAPIHandler(manager, mode),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    16 * 1024,
@@ -199,6 +213,86 @@ func newAgentAPIServer(manager *Manager, mode string) *http.Server {
 var errAgentServiceNotFound = errors.New("service not found")
 
 func newAgentAPIHandler(manager *Manager, mode string) http.Handler {
+	return newAgentAPIHandlerWithWorkspaceHandler(manager, mode, nil)
+}
+
+func newAgentAPIHandlerWithWorkspaceHandler(manager *Manager, mode string, onWorkspaceChanged func(string)) http.Handler {
+	return agentAPILoopbackMiddleware(newAgentAPIRoutes(manager, mode, onWorkspaceChanged))
+}
+
+func newHeadlessAgentAPIHandler(manager *Manager, onWorkspaceChanged func(string)) http.Handler {
+	return newHeadlessAgentAPIHandlerWithDesktopAddress(manager, onWorkspaceChanged, desktopAgentAPIListen)
+}
+
+func newHeadlessAgentAPIHandlerWithDesktopAddress(manager *Manager, onWorkspaceChanged func(string), desktopAddress string) http.Handler {
+	fallback := newAgentAPIRoutes(manager, agentAPIModeHeadless, onWorkspaceChanged)
+	target := &url.URL{Scheme: "http", Host: desktopAddress}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	originalDirector := proxy.Director
+	proxy.Director = func(request *http.Request) {
+		originalDirector(request)
+		request.Host = desktopAddress
+	}
+	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, _ error) {
+		writeAgentAPIError(w, http.StatusBadGateway, "desktop_api_unavailable", "the desktop API could not complete the request")
+	}
+
+	dispatch := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if desktopAgentAPIIsRunning(r.Context(), desktopAddress) {
+			proxy.ServeHTTP(w, r)
+			return
+		}
+		fallback.ServeHTTP(w, r)
+	})
+	return agentAPILoopbackMiddleware(dispatch)
+}
+
+func desktopAgentAPIIsRunning(ctx context.Context, address string) bool {
+	probeCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, "http://"+address+"/v1/health", nil)
+	if err != nil {
+		return false
+	}
+	client := &http.Client{
+		Timeout: time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return false
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return false
+	}
+	var health struct {
+		OK   bool   `json:"ok"`
+		Mode string `json:"mode"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&health); err != nil {
+		return false
+	}
+	return health.OK && health.Mode == agentAPIModeDesktop
+}
+
+func agentAPILoopbackMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") != "" {
+			writeAgentAPIError(w, http.StatusForbidden, "browser_origin_denied", "browser-origin requests are not supported")
+			return
+		}
+		if !isLoopbackAddress(r.RemoteAddr) || !isLoopbackHost(r.Host) {
+			writeAgentAPIError(w, http.StatusForbidden, "loopback_only", "the API accepts loopback clients only")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func newAgentAPIRoutes(manager *Manager, mode string, onWorkspaceChanged func(string)) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeAgentJSON(w, http.StatusOK, struct {
@@ -224,6 +318,9 @@ func newAgentAPIHandler(manager *Manager, mode string) http.Handler {
 		if err != nil {
 			writeAgentAPIError(w, http.StatusUnprocessableEntity, "project_load_failed", "folder could not be loaded as a Nala Ctrl project")
 			return
+		}
+		if onWorkspaceChanged != nil {
+			onWorkspaceChanged(state.Folder)
 		}
 		writeAgentJSON(w, http.StatusOK, safeAgentWorkspace(state))
 	})
@@ -332,17 +429,7 @@ func newAgentAPIHandler(manager *Manager, mode string) http.Handler {
 		writeAgentJSON(w, http.StatusOK, state)
 	})
 
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Origin") != "" {
-			writeAgentAPIError(w, http.StatusForbidden, "browser_origin_denied", "browser-origin requests are not supported")
-			return
-		}
-		if !isLoopbackAddress(r.RemoteAddr) || !isLoopbackHost(r.Host) {
-			writeAgentAPIError(w, http.StatusForbidden, "loopback_only", "the API accepts loopback clients only")
-			return
-		}
-		mux.ServeHTTP(w, r)
-	})
+	return mux
 }
 
 func safeAgentWorkspace(state *WorkspaceState) agentWorkspaceDTO {

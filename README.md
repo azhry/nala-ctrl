@@ -29,9 +29,9 @@ Each folder you add contributes one project group to the list. Its services have
 
 ## Local agent API
 
-The desktop app starts a local JSON API at `127.0.0.1:47654` during Wails startup. It uses the same manager as the desktop UI, so its workspace, service state, run, stop, logs, and branch routes refer to that app instance. The desktop API reports `mode=desktop` from `GET /v1/health` and does not require a token or authentication header.
+The desktop app starts a local JSON API at `127.0.0.1:47654` during Wails startup. It uses the same manager as the desktop UI, so its workspace, service state, run, stop, logs, and branch routes refer to that app instance. The in-app headless API at `127.0.0.1:47653` shares this manager and also reports `mode=desktop`. Service operations through either endpoint update the same process state and UI events. The desktop API does not require a token or authentication header.
 
-The console binary can also run a separate headless API without opening the Wails desktop UI. From a source checkout, build the embedded frontend assets and then the console binary:
+The console binary can also run a standalone headless API without opening the Wails desktop UI. From a source checkout, build the embedded frontend assets and then the console binary:
 
 ```bash
 npm --prefix frontend ci
@@ -39,19 +39,19 @@ npm --prefix frontend run build
 go build -o nala-ctrl .
 ```
 
-Start this mode only when a headless manager is explicitly needed:
+Start this mode when the desktop app is not running and a headless manager is needed:
 
 ```bash
 ./nala-ctrl api serve --listen 127.0.0.1:47653
 ```
 
-On Windows, use `nala-ctrl.exe` (or `./nala-ctrl.exe` in Git Bash). This command reports `mode=headless` at `127.0.0.1:47653` and owns a separate manager from the desktop app. The desktop app uses `127.0.0.1:47654`, so both modes can run at the same time. Do not use the headless command as a fallback for desktop service operations.
+On Windows, use `nala-ctrl.exe` (or `./nala-ctrl.exe` in Git Bash). If the desktop API is running at `127.0.0.1:47654`, the standalone listener forwards requests to it and reports `mode=desktop`, so operations use the same manager as the UI. Otherwise it owns a separate manager and reports `mode=headless`. Do not use the standalone command as a fallback for desktop service operations.
 
 ```bash
 curl --silent --show-error --fail http://127.0.0.1:47653/v1/health
 ```
 
-Both APIs accept requests only from loopback clients and reject browser-origin requests. Health returns `{"ok":true,"mode":"desktop"}` from the desktop API at `127.0.0.1:47654` or `{"ok":true,"mode":"headless"}` from the standalone API at `127.0.0.1:47653`. They restore explicitly registered `nala.yml` folders from the user's Nala Ctrl config directory. `POST /v1/projects/load` can register a folder; when using desktop mode, add projects through the UI so its project list refreshes.
+Both APIs accept requests only from loopback clients and reject browser-origin requests. Health returns `{"ok":true,"mode":"desktop"}` whenever the request uses the desktop manager, including requests forwarded through `127.0.0.1:47653`; standalone mode returns `{"ok":true,"mode":"headless"}`. They restore explicitly registered `nala.yml` folders from the user's Nala Ctrl config directory. `POST /v1/projects/load` registers a folder; in desktop mode the UI refreshes its project list and selects the loaded project.
 
 | Request | Purpose |
 | --- | --- |
@@ -61,10 +61,10 @@ Both APIs accept requests only from loopback clients and reject browser-origin r
 | `GET /v1/services/{serviceID}` | Read service configuration and manager-owned run state. |
 | `GET /v1/services/{serviceID}/logs?limit=N` | Read the latest log lines; the default is 100 and the maximum is 250. |
 | `POST /v1/services/{serviceID}/run` | Start that configured service through the manager serving this API. |
-| `POST /v1/services/{serviceID}/stop` | Stop that service only when the manager serving this API started it. |
+| `POST /v1/services/{serviceID}/stop` | Stop the manager-owned service or the safe owner of that loaded service's configured port. |
 | `GET /v1/projects/git-branch?projectId=<url-encoded-path>` | Read the registered project root's current branch and local branch names. |
 
-Workspace and service responses omit configured `run` commands and environment values. The workspace response's `hasWarnings` flag signals that saved project folders could not all be read or persisted; it omits diagnostic details that might contain private configuration. A service's `running` value reflects processes started by the manager serving this API; in desktop mode, that is the same manager used by the UI. `portInUse` reports whether a configured port is occupied but does not identify or control its owner. The branch route describes the current branch of the registered project root and does not identify the branch or worktree used when a process started. Logs may contain secrets, so request them only for diagnosis and redact sensitive values before reporting. The API has no route to switch branches or terminate a port owner. Stopping the standalone API with Ctrl-C stops processes that its manager started.
+Workspace and service responses omit configured `run` commands and environment values. The workspace response's `hasWarnings` flag signals that saved project folders could not all be read or persisted; it omits diagnostic details that might contain private configuration. A service's `running` value reflects processes started by the manager serving this API; desktop mode shares that manager with the UI. `portInUse` reports whether a configured port is occupied. The branch route describes the current branch of the registered project root and does not identify the branch or worktree used when a process started. Logs may contain secrets, so request them only for diagnosis and redact sensitive values before reporting. The API has no route to switch branches or arbitrary PID control. Stopping a standalone API with Ctrl-C stops processes its own manager started; requests forwarded to the desktop manager remain owned by the desktop app.
 
 ## Development
 
@@ -98,7 +98,7 @@ Start the desktop app and the headless API from this checkout with:
 make dev
 ```
 
-This target runs `wails dev` and sets the development flag that starts the headless API on `127.0.0.1:47653` inside that same app process. Health reports `mode=headless`; the API owns a separate Manager from the desktop API at `127.0.0.1:47654`. Use the app's headless API control to stop or restart it. Stopping the API stops only services its Manager started. If the port is already occupied, the app reports the bind error and leaves that owner alone. Running `wails dev` directly starts the desktop API but does not auto-start the headless API. The standalone `nala-ctrl api serve` command remains available when only a headless API is needed.
+This target runs `wails dev` and sets the development flag that starts the headless API on `127.0.0.1:47653` inside that same app process. It shares the desktop `Manager` at `127.0.0.1:47654`, so health reports `mode=desktop` and service actions update the UI. Use the app's headless API control to stop or restart the listener; stopping it leaves desktop-managed services running. If the port is already occupied, the app reports the bind error and leaves that owner alone. Running `wails dev` directly starts the desktop API but does not auto-start the headless API. The standalone `nala-ctrl api serve` command remains available; it forwards to the desktop manager when the desktop API is available and uses its own manager otherwise.
 
 The desktop app includes a one-click **Fix Docker** action for local Docker Desktop recovery. Before restarting Docker Desktop, it checks the current boot logs for the known secrets-engine socket rename failure. If that exact error is present and the matching zero-length Windows reparse point still exists, it confirms no local Desktop engine is ready, then moves the socket aside through WSL and preserves it under a timestamped backup name. It then uses the supported Docker Desktop restart/start commands and waits for a local engine to respond. Restarting interrupts running containers. The known socket repair requires WSL; the action does not reset images, containers, or volumes.
 
