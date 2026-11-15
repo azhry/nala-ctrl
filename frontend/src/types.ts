@@ -91,3 +91,27 @@ export interface ProjectStateEvent {
   running: boolean;
   pid: number;
 }
+
+export interface JobSchedule {
+  intervalMinutes: number;
+  offsetMinutes: number;
+}
+
+export interface JobRun {
+  id: string;
+  startedAt: string;
+  finishedAt?: string;
+  status: JobRunStatus;
+  summary: string;
+}
+
+export type JobRunStatus = 'running' | 'healthy' | 'unhealthy' | 'failed';
+
+export interface Job {
+  id: string;
+  name: string;
+  description: string;
+  schedule: JobSchedule;
+  nextRunAt: string;
+  lastRun?: JobRun;
+}

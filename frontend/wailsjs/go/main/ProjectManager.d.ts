@@ -10,6 +10,12 @@ export function FixDocker():Promise<void>;
 
 export function GetHeadlessAPIStatus():Promise<main.HeadlessAPIStatus>;
 
+export function GetJobRunLog(arg1:string,arg2:string):Promise<Array<string>>;
+
+export function GetJobRuns(arg1:string):Promise<Array<main.JobRun>>;
+
+export function GetJobs():Promise<Array<main.Job>>;
+
 export function GetProjectDetails(arg1:string):Promise<main.ProjectDetails>;
 
 export function GetProjectGitBranchState(arg1:string):Promise<main.GitBranchState>;
@@ -33,3 +39,5 @@ export function SwitchProjectGitBranch(arg1:string,arg2:string):Promise<main.Git
 export function SyncProjectGitWithMain(arg1:string):Promise<main.GitBranchState>;
 
 export function TerminatePortOwnerAndRun(arg1:string,arg2:number,arg3:number):Promise<main.RunResult>;
+
+export function UpdateJobSchedule(arg1:string,arg2:main.JobSchedule):Promise<main.Job>;

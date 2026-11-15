@@ -4,6 +4,7 @@ import { ChooseFolder, CreateConfig, FixDocker, GetHeadlessAPIStatus, GetProject
 import { EventsOn } from '../wailsjs/runtime/runtime';
 import { Icon } from './icons';
 import type { CreateProjectInput, GitBranchState, ProcessIdentity, Project, ProjectDetails, ProjectLogEvent, ProjectStateEvent, ServiceRuntimeStatus, WorkspaceState } from './types';
+import { JobsView } from './JobsView';
 import './App.css';
 
 type GlobalBusyAction = 'folder' | 'config' | null;
@@ -66,6 +67,7 @@ function displayLogLine(line: string): string {
 }
 
 function App() {
+  const [activeView, setActiveView] = useState<'projects' | 'jobs'>('projects');
   const [workspace, setWorkspace] = useState<WorkspaceState>(emptyWorkspace);
   const [workspaceHydrating, setWorkspaceHydrating] = useState(true);
   const [workspaceWarnings, setWorkspaceWarnings] = useState<string[]>([]);
@@ -249,6 +251,7 @@ function App() {
     try {
       const result = await ChooseFolder();
       if (!result) return;
+      setActiveView('projects');
       workspaceChangeVersion.current += 1;
       setWorkspaceHydrating(false);
       setWorkspace(result);
@@ -514,6 +517,7 @@ function App() {
   };
 
   const selectService = (service: Project['services'][number]) => {
+    setActiveView('projects');
     setSetupOpen(false);
     if (service.id === selectedServiceId) {
       setError('');
@@ -531,6 +535,7 @@ function App() {
   };
 
   const resumeSetup = () => {
+    setActiveView('projects');
     setSetupOpen(true);
     selectServiceId('');
     setDetails(null);
@@ -542,6 +547,7 @@ function App() {
   };
 
   const navigateHome = () => {
+    setActiveView('projects');
     setSetupOpen(false);
     selectServiceId('');
     setDetails(null);
@@ -560,6 +566,15 @@ function App() {
           <span className="brand-type"><strong>nala<span>ctrl</span></strong><small>LOCAL PROCESS DESK</small></span>
         </button>
 
+        <nav className="main-view-nav" aria-label="Main views">
+          <button type="button" className={`main-view-link${activeView === 'projects' ? ' is-current' : ''}`} onClick={() => setActiveView('projects')} aria-current={activeView === 'projects' ? 'page' : undefined}>
+            <Icon name="folder" /><span>Projects</span>
+          </button>
+          <button type="button" className={`main-view-link${activeView === 'jobs' ? ' is-current' : ''}`} onClick={() => setActiveView('jobs')} aria-current={activeView === 'jobs' ? 'page' : undefined}>
+            <Icon name="clock" /><span>Jobs</span>
+          </button>
+        </nav>
+
         <div className="project-nav-head">
           <span>PROJECTS</span>
           <span className="project-count">{workspaceHydrating ? 'Restoring…' : `${workspace.projects.length} ${workspace.projects.length === 1 ? 'project' : 'projects'}`}</span>
@@ -575,7 +590,7 @@ function App() {
                 </div>
                 <div className="project-services" role="group" aria-label={`${project.name} services`}>
                   {project.services.map((service) => {
-                    const active = service.id === selectedServiceId;
+                    const active = activeView === 'projects' && service.id === selectedServiceId;
                     const status = serviceStatuses[service.id] ?? (active && details ? { running: details.running, pid: details.pid, portOwner: details.portOwner } : null);
                     const serviceAction = serviceActions[service.id];
                     const portOwner = status?.portOwner ?? null;
@@ -616,9 +631,11 @@ function App() {
       <main className="main-area">
         <header className="topbar">
           <div className="breadcrumb">
-            {selected ? <button className="breadcrumb-home" onClick={navigateHome} aria-label="Go to project overview" title="Project overview">PROJECTS</button> : <span aria-current="page">PROJECTS</span>}
-            <Icon name="chevron" /><strong title={setupOpen ? workspace.folder : selectedProject?.folder || workspace.folder}>{selectedProject?.name ?? (setupOpen && workspace.folder ? folderName(workspace.folder) : 'Overview')}</strong>
-            {selected && <><Icon name="chevron" /><span className="crumb-project">{selected.name}</span></>}
+            {activeView === 'jobs' ? <><span aria-current="page">JOBS</span><Icon name="chevron" /><strong>Scheduled jobs</strong></> : <>
+              {selected ? <button className="breadcrumb-home" onClick={navigateHome} aria-label="Go to project overview" title="Project overview">PROJECTS</button> : <span aria-current="page">PROJECTS</span>}
+              <Icon name="chevron" /><strong title={setupOpen ? workspace.folder : selectedProject?.folder || workspace.folder}>{selectedProject?.name ?? (setupOpen && workspace.folder ? folderName(workspace.folder) : 'Overview')}</strong>
+              {selected && <><Icon name="chevron" /><span className="crumb-project">{selected.name}</span></>}
+            </>}
           </div>
           <div className="topbar-actions">
             {(workspace.folder || workspace.projects.length > 0) && <span className="local-pill">This machine</span>}
@@ -665,7 +682,9 @@ function App() {
           {headlessAPIError && <div id="headless-api-error" className="message-banner error-banner" role="alert"><Icon name="warning" /><span>Headless API: {headlessAPIError}</span><button onClick={() => setHeadlessAPIError('')} aria-label="Dismiss headless API error"><Icon name="close" /></button></div>}
           {workspaceWarnings.length > 0 && <div className="message-banner error-banner" role="status" aria-live="polite"><Icon name="warning" /><span>Workspace warning: {workspaceWarnings.join(' ')}</span><button onClick={() => setWorkspaceWarnings([])} aria-label="Dismiss workspace warnings"><Icon name="close" /></button></div>}
           {notice && <div className="message-banner notice-banner" role="status"><Icon name="check" /><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Dismiss notification"><Icon name="close" /></button></div>}
-          {workspaceHydrating ? (
+          {activeView === 'jobs' ? (
+            <JobsView />
+          ) : workspaceHydrating ? (
             <div className="workspace-loading-state" role="status" aria-live="polite"><Icon name="refresh" /><span>Restoring saved projects…</span></div>
           ) : (
             <>
