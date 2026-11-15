@@ -2,9 +2,10 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"strings"
-	"sync"
+	"time"
 )
 
 const projectLogEventName = "project:log"
@@ -29,77 +30,65 @@ type ProjectStateEvent struct {
 	PID         int32  `json:"pid"`
 }
 
-type processLogWriter struct {
-	mu          sync.Mutex
-	file        *os.File
-	projectID   string
-	projectName string
-	serviceID   string
-	serviceName string
-	logSize     int64
-	pending     []byte
-	pendingFrom int64
-	emit        func(ProjectLogEvent)
-}
-
-func newProcessLogWriter(file *os.File, projectID, projectName, serviceID, serviceName string, emit func(ProjectLogEvent)) (*processLogWriter, error) {
-	info, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	size := info.Size()
-	return &processLogWriter{file: file, projectID: projectID, projectName: projectName, serviceID: serviceID, serviceName: serviceName, logSize: size, pendingFrom: size, emit: emit}, nil
-}
-
-func (w *processLogWriter) Write(data []byte) (int, error) {
-	w.mu.Lock()
-	n, err := w.file.Write(data)
-	if n == 0 {
-		w.mu.Unlock()
-		return n, err
-	}
-	w.pending = append(w.pending, data[:n]...)
-	w.logSize += int64(n)
-	events := w.takeCompleteLines()
-	w.mu.Unlock()
-	w.emitEvents(events)
-	return n, err
-}
-
-func (w *processLogWriter) takeCompleteLines() []ProjectLogEvent {
-	var events []ProjectLogEvent
-	for {
-		newline := bytes.IndexByte(w.pending, '\n')
-		if newline < 0 {
-			return events
+func (m *Manager) followServiceLog(spec projectSpec, offset int64, done <-chan struct{}) {
+	const maxReadSize = 64 * 1024
+	ticker := time.NewTicker(150 * time.Millisecond)
+	defer ticker.Stop()
+	pending := []byte{}
+	pendingFrom := offset
+	readAvailable := func() bool {
+		file, err := os.Open(spec.LogPath)
+		if err != nil {
+			return false
 		}
-		line := strings.TrimSuffix(string(w.pending[:newline]), "\r")
-		end := w.pendingFrom + int64(newline+1)
-		events = append(events, ProjectLogEvent{ProjectID: w.projectID, ProjectName: w.projectName, ServiceID: w.serviceID, ServiceName: w.serviceName, Line: line, LogSize: end})
-		w.pending = w.pending[newline+1:]
-		w.pendingFrom = end
+		defer file.Close()
+		info, err := file.Stat()
+		if err != nil {
+			return false
+		}
+		if info.Size() < offset {
+			offset = 0
+			pending = nil
+			pendingFrom = 0
+		}
+		if info.Size() <= offset {
+			return false
+		}
+		readSize := info.Size() - offset
+		if readSize > maxReadSize {
+			readSize = maxReadSize
+		}
+		data := make([]byte, readSize)
+		n, err := file.ReadAt(data, offset)
+		if err != nil && err != io.EOF {
+			return false
+		}
+		data = data[:n]
+		pending = append(pending, data...)
+		offset += int64(n)
+		for {
+			newline := bytes.IndexByte(pending, '\n')
+			if newline < 0 {
+				return n > 0
+			}
+			line := strings.TrimSuffix(string(pending[:newline]), "\r")
+			end := pendingFrom + int64(newline+1)
+			m.publishLog(ProjectLogEvent{ProjectID: spec.ProjectID, ProjectName: spec.ProjectName, ServiceID: spec.ID, ServiceName: spec.Name, Line: line, LogSize: end})
+			pending = pending[newline+1:]
+			pendingFrom = end
+		}
 	}
-}
-
-func (w *processLogWriter) Close() error {
-	w.mu.Lock()
-	var events []ProjectLogEvent
-	if len(w.pending) > 0 {
-		events = append(events, ProjectLogEvent{ProjectID: w.projectID, ProjectName: w.projectName, ServiceID: w.serviceID, ServiceName: w.serviceName, Line: string(w.pending), LogSize: w.logSize})
-		w.pending = nil
-		w.pendingFrom = w.logSize
-	}
-	err := w.file.Close()
-	w.mu.Unlock()
-	w.emitEvents(events)
-	return err
-}
-
-func (w *processLogWriter) emitEvents(events []ProjectLogEvent) {
-	if w.emit == nil {
-		return
-	}
-	for _, event := range events {
-		w.emit(event)
+	for {
+		select {
+		case <-done:
+			for readAvailable() {
+			}
+			if len(pending) > 0 {
+				m.publishLog(ProjectLogEvent{ProjectID: spec.ProjectID, ProjectName: spec.ProjectName, ServiceID: spec.ID, ServiceName: spec.Name, Line: string(pending), LogSize: offset})
+			}
+			return
+		case <-ticker.C:
+			readAvailable()
+		}
 	}
 }

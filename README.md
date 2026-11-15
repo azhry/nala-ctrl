@@ -60,13 +60,13 @@ Both APIs accept requests only from loopback clients and reject browser-origin r
 | `GET /v1/health` | Confirm that the API is responding and identify its mode. |
 | `GET /v1/workspace` | List projects and configured services in the manager serving this API. |
 | `POST /v1/projects/load` with `{"folder":"/path/to/project"}` | Register a project folder containing `nala.yml`. |
-| `GET /v1/services/{serviceID}` | Read service configuration and manager-owned run state. |
+| `GET /v1/services/{serviceID}` | Read service configuration, running state, and configured-port occupancy. |
 | `GET /v1/services/{serviceID}/logs?limit=N` | Read the latest log lines; the default is 100 and the maximum is 250. |
 | `POST /v1/services/{serviceID}/run` | Start that configured service through the manager serving this API. |
-| `POST /v1/services/{serviceID}/stop` | Stop the manager-owned service or the safe owner of that loaded service's configured port. |
+| `POST /v1/services/{serviceID}/stop` | Stop the manager-owned or safely rediscovered service, or the safe owner of that loaded service's configured port. |
 | `GET /v1/projects/git-branch?projectId=<url-encoded-path>` | Read the registered project root's current branch and local branch names. |
 
-Workspace and service responses omit configured `run` commands and environment values. The workspace response's `hasWarnings` flag signals that saved project folders could not all be read or persisted; it omits diagnostic details that might contain private configuration. A service's `running` value reflects processes started by the manager serving this API; desktop mode shares that manager with the UI. `portInUse` reports whether a configured port is occupied. The branch route describes the current branch of the registered project root and does not identify the branch or worktree used when a process started. Logs may contain secrets, so request them only for diagnosis and redact sensitive values before reporting. The API has no route to switch branches or arbitrary PID control. Stopping a standalone API with Ctrl-C stops processes its own manager started; requests forwarded to the desktop manager remain owned by the desktop app.
+Workspace and service responses omit configured `run` commands and environment values. The workspace response's `hasWarnings` flag signals that saved project folders could not all be read or persisted; it omits diagnostic details that might contain private configuration. A service's `running` value reflects processes started or safely rediscovered by the manager serving this API. Rediscovery is limited to loaded services and matches the configured `run` command and resolved `cwd`; an unrelated process on the configured port remains a conflict. Desktop mode shares the manager with the UI. `portInUse` reports whether any process occupies a configured port. The branch route describes the current branch of the registered project root and does not identify the branch or worktree used when a process started. Logs may contain secrets, so request them only for diagnosis and redact sensitive values before reporting. The API has no route to switch branches or arbitrary PID control. Stopping a standalone API with Ctrl-C stops processes its manager started; requests forwarded to the desktop manager remain owned by the desktop app.
 
 ## Development
 

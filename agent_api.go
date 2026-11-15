@@ -464,31 +464,23 @@ func getAgentServiceSpec(manager *Manager, serviceID string) (projectSpec, bool)
 func getAgentServiceStatus(manager *Manager, serviceID string) (agentServiceStatusDTO, error) {
 	manager.mu.RLock()
 	spec, exists := manager.services[serviceID]
-	process := manager.running[serviceID]
 	manager.mu.RUnlock()
 	if !exists {
 		return agentServiceStatusDTO{}, errAgentServiceNotFound
+	}
+	runtimeStatus, err := manager.GetProjectStatus(serviceID)
+	if err != nil {
+		return agentServiceStatusDTO{}, err
 	}
 
 	status := agentServiceStatusDTO{
 		ProjectID: spec.ProjectID, ProjectName: spec.ProjectName,
 		ServiceID: spec.ID, ServiceName: spec.Name, CWD: spec.CWD,
 		Port: spec.Port, LogPath: spec.LogPath, Configured: true,
-	}
-	if process != nil {
-		select {
-		case <-process.done:
-		default:
-			status.Running = true
-			status.PID = process.pid
-		}
+		Running: runtimeStatus.Running, PID: runtimeStatus.PID,
 	}
 	if spec.Port != nil {
-		owner, err := findPortOwner(*spec.Port)
-		if err != nil {
-			return agentServiceStatusDTO{}, err
-		}
-		inUse := owner != nil
+		inUse := runtimeStatus.PortOwner != nil
 		status.PortInUse = &inUse
 	}
 	return status, nil

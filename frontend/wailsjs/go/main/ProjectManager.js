@@ -26,6 +26,10 @@ export function GetProjectGitBranchState(arg1) {
   return window['go']['main']['ProjectManager']['GetProjectGitBranchState'](arg1);
 }
 
+export function GetProjectStatus(arg1) {
+  return window['go']['main']['ProjectManager']['GetProjectStatus'](arg1);
+}
+
 export function GetWorkspace() {
   return window['go']['main']['ProjectManager']['GetWorkspace']();
 }

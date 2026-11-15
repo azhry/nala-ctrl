@@ -4,8 +4,8 @@
 
 - The default log path for a service is `logs/<service-name>.log` under that service's configured working directory.
 - A service's optional `log` field overrides that path. Relative log paths resolve from the service working directory.
-- Nala Ctrl appends both stdout and stderr to the service's file when it starts the configured command. It creates the log directory as needed.
-- New complete lines are sent to the selected service's UI through Wails `project:log` events, tagged with both the project and service IDs. A final partial line is emitted when the process output writer closes.
+- Nala Ctrl appends both stdout and stderr directly to the service's file when it starts the configured command. It creates the log directory as needed.
+- The manager follows the file and sends new complete lines to the selected service's UI through Wails `project:log` events, tagged with both the project and service IDs. A final partial line is emitted when the service stops. A reopened app starts following the same file after it matches the existing process to a loaded service.
 - The UI starts with a snapshot of at most 250 recent lines and appends later events. The snapshot reads at most the latest 512 KiB of the file.
 
 ## Diagnosing a project

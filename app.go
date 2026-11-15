@@ -103,7 +103,9 @@ func (p *ProjectManager) shutdown(ctx context.Context) {
 	if _, err := p.headlessAPI.Stop(); err != nil {
 		runtime.LogError(p.ctx, fmt.Sprintf("Nala Ctrl headless API shutdown failed: %v", err))
 	}
-	_ = p.manager.StopAll()
+	if err := p.manager.StopAll(); err != nil {
+		runtime.LogError(p.ctx, fmt.Sprintf("Nala Ctrl service shutdown failed: %v", err))
+	}
 }
 
 func (p *ProjectManager) GetHeadlessAPIStatus() HeadlessAPIStatus {
@@ -146,6 +148,10 @@ func (p *ProjectManager) CreateConfig(input CreateProjectInput) (*WorkspaceState
 
 func (p *ProjectManager) GetProjectDetails(projectID string) (*ProjectDetails, error) {
 	return p.manager.GetProjectDetails(projectID)
+}
+
+func (p *ProjectManager) GetProjectStatus(projectID string) (*ServiceRuntimeStatus, error) {
+	return p.manager.GetProjectStatus(projectID)
 }
 
 func (p *ProjectManager) GetProjectGitBranchState(projectID string) (*GitBranchState, error) {

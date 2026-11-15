@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, FormEvent, RefObject, SetStateAction } from 'react';
-import { ChooseFolder, CreateConfig, FixDocker, GetHeadlessAPIStatus, GetProjectDetails, GetProjectGitBranchState, GetWorkspace, RunProject, StartHeadlessAPI, StopHeadlessAPI, StopProject, SyncProjectGitWithMain, SwitchProjectGitBranch, TerminatePortOwnerAndRun } from '../wailsjs/go/main/ProjectManager';
+import { ChooseFolder, CreateConfig, FixDocker, GetHeadlessAPIStatus, GetProjectDetails, GetProjectGitBranchState, GetProjectStatus, GetWorkspace, RunProject, StartHeadlessAPI, StopHeadlessAPI, StopProject, SyncProjectGitWithMain, SwitchProjectGitBranch, TerminatePortOwnerAndRun } from '../wailsjs/go/main/ProjectManager';
 import { EventsOn } from '../wailsjs/runtime/runtime';
 import { Icon } from './icons';
-import type { CreateProjectInput, GitBranchState, ProcessIdentity, Project, ProjectDetails, ProjectLogEvent, ProjectStateEvent, WorkspaceState } from './types';
+import type { CreateProjectInput, GitBranchState, ProcessIdentity, Project, ProjectDetails, ProjectLogEvent, ProjectStateEvent, ServiceRuntimeStatus, WorkspaceState } from './types';
 import './App.css';
 
 type GlobalBusyAction = 'folder' | 'config' | null;
 type ServiceAction = 'run' | 'stop' | 'terminate';
-type ServiceStatus = { running: boolean; pid: number };
+type ServiceStatus = ServiceRuntimeStatus;
 type HeadlessAPIAction = 'checking' | 'start' | 'stop' | null;
 type HeadlessAPIStatus = { running: boolean; address: string; error?: string };
 const projectLogEventName = 'project:log';
@@ -96,7 +96,7 @@ function App() {
     const stateVersion = serviceStateVersions.current[serviceId] ?? 0;
     const next = await GetProjectDetails(serviceId);
     if ((serviceStateVersions.current[serviceId] ?? 0) === stateVersion) {
-      setServiceStatuses((current) => ({ ...current, [serviceId]: { running: next.running, pid: next.pid } }));
+      setServiceStatuses((current) => ({ ...current, [serviceId]: { running: next.running, pid: next.pid, portOwner: next.portOwner } }));
     }
     if (!isCurrent()) return next;
     setDetails((current) => {
@@ -118,6 +118,22 @@ function App() {
   );
   const selectedProject = selectedEntry?.project ?? null;
   const selected = selectedEntry?.service ?? null;
+
+  useEffect(() => {
+    let cancelled = false;
+    for (const { service } of serviceEntries) {
+      const serviceId = service.id;
+      const stateVersion = serviceStateVersions.current[serviceId] ?? 0;
+      void GetProjectStatus(serviceId).then((status) => {
+        if (cancelled || (serviceStateVersions.current[serviceId] ?? 0) !== stateVersion) return;
+        setServiceStatuses((current) => ({
+          ...current,
+          [serviceId]: { running: status.running, pid: status.pid, portOwner: status.portOwner },
+        }));
+      }).catch(() => {});
+    }
+    return () => { cancelled = true; };
+  }, [serviceEntries]);
 
   const selectServiceId = useCallback((serviceId: string) => {
     selectedServiceRef.current = serviceId;
@@ -266,8 +282,23 @@ function App() {
   }, [refreshDetails, selectServiceId]);
 
   useEffect(() => EventsOn(projectStateEventName, (event: ProjectStateEvent) => {
-    serviceStateVersions.current[event.serviceId] = (serviceStateVersions.current[event.serviceId] ?? 0) + 1;
-    setServiceStatuses((current) => ({ ...current, [event.serviceId]: { running: event.running, pid: event.pid } }));
+    const stateVersion = (serviceStateVersions.current[event.serviceId] ?? 0) + 1;
+    serviceStateVersions.current[event.serviceId] = stateVersion;
+    setServiceStatuses((current) => ({
+      ...current,
+      [event.serviceId]: {
+        running: event.running,
+        pid: event.pid,
+        portOwner: current[event.serviceId]?.portOwner,
+      },
+    }));
+    void GetProjectStatus(event.serviceId).then((status) => {
+      if ((serviceStateVersions.current[event.serviceId] ?? 0) !== stateVersion) return;
+      setServiceStatuses((current) => ({
+        ...current,
+        [event.serviceId]: { running: status.running, pid: status.pid, portOwner: status.portOwner },
+      }));
+    }).catch(() => {});
   }), []);
 
   useEffect(() => {
@@ -545,17 +576,23 @@ function App() {
                 <div className="project-services" role="group" aria-label={`${project.name} services`}>
                   {project.services.map((service) => {
                     const active = service.id === selectedServiceId;
-                    const status = serviceStatuses[service.id] ?? (active && details ? { running: details.running, pid: details.pid } : null);
+                    const status = serviceStatuses[service.id] ?? (active && details ? { running: details.running, pid: details.pid, portOwner: details.portOwner } : null);
                     const serviceAction = serviceActions[service.id];
-                    const live = status?.running ?? false;
-                    const stateLabel = serviceAction === 'run' ? 'STARTING' : serviceAction === 'stop' || serviceAction === 'terminate' ? 'STOPPING' : status ? (live ? 'RUNNING' : 'STOPPED') : 'CHECKING';
+                    const portOwner = status?.portOwner ?? null;
+                    const ownerMatchesService = portOwner?.managedProjectId === project.id && portOwner?.managedServiceId === service.id;
+                    const portConflict = portOwner !== null && !ownerMatchesService;
+                    const live = Boolean(status?.running || ownerMatchesService);
+                    const livePID = status?.pid || (ownerMatchesService ? portOwner?.pid ?? 0 : 0);
+                    const portOccupied = !live && portOwner !== null;
+                    const stateLabel = serviceAction === 'run' ? 'STARTING' : serviceAction === 'stop' || serviceAction === 'terminate' ? 'STOPPING' : status ? (live ? portConflict ? 'RUNNING · PORT CONFLICT' : 'RUNNING' : portOccupied ? 'PORT IN USE' : 'STOPPED') : 'CHECKING';
                     return (
                       <button key={service.id} className={`project-item${active ? ' selected' : ''}`} onClick={() => selectService(service)} aria-current={active ? 'page' : undefined} aria-label={`${service.name}, ${stateLabel.toLowerCase()}${service.port ? `, port ${service.port}` : ''}`} title={`${project.folder} · ${service.name}`}>
-                        <span className={`project-dot${live ? ' live' : ''}`} aria-hidden="true" />
+                        <span className={`project-dot${live || portOccupied ? ' live' : ''}`} aria-hidden="true" />
                         <span className="project-item-copy">
                           <strong>{service.name}</strong>
                           <small>{service.port ? `PORT ${service.port}` : 'NO PORT CHECK'} · {stateLabel}</small>
-                          {live && status && status.pid > 0 && <small className="project-location">PID {status.pid}</small>}
+                          {live && livePID > 0 && <small className="project-location">PID {livePID}</small>}
+                          {portOwner && (portOccupied || portConflict) && <small className="project-location">{portOwner.name} · PID {portOwner.pid}</small>}
                         </span>
                         {active && <Icon className="project-chevron" name="chevron" />}
                       </button>
@@ -745,11 +782,22 @@ function ProjectOverview({
               <div className="overview-service-list" role="group" aria-label={`${project.name} services`}>
                 {project.services.map((service) => {
                   const status = serviceStatuses[service.id];
-                  const stateLabel = status ? (status.running ? `Running · PID ${status.pid}` : 'Stopped') : 'Select to check status';
+                  const owner = status?.portOwner;
+                  const ownerMatchesService = owner?.managedProjectId === project.id && owner?.managedServiceId === service.id;
+                  const portConflict = Boolean(owner && !ownerMatchesService);
+                  const live = Boolean(status?.running || ownerMatchesService);
+                  const livePID = status?.pid || (ownerMatchesService ? owner?.pid ?? 0 : 0);
+                  const stateLabel = status
+                    ? live
+                      ? `Running · PID ${livePID}${portConflict && owner ? ` · port held by ${owner.name} · PID ${owner.pid}` : ''}`
+                      : owner
+                        ? `Port in use · ${owner.name} · PID ${owner.pid}`
+                        : 'Stopped'
+                    : 'Checking status';
                   return (
                     <button key={service.id} className="overview-service" onClick={() => onSelectService(service)} aria-label={`${project.name}, ${service.name}, ${stateLabel}`}>
                       <span className="overview-service-copy"><strong>{service.name}</strong><small>{service.port ? `PORT ${service.port}` : 'NO PORT CHECK'}</small></span>
-                      <span className={`overview-service-status${status?.running ? ' live' : ''}`}><i aria-hidden="true" />{stateLabel}</span>
+                      <span className={`overview-service-status${live ? ' live' : ''}`}><i aria-hidden="true" />{stateLabel}</span>
                       <Icon name="chevron" />
                     </button>
                   );
@@ -832,12 +880,16 @@ function ProjectScreen({
   onRefresh: () => void;
   onToggleFollow: () => void;
 }) {
-  const running = details?.running ?? false;
   const owner = details?.portOwner ?? null;
+  const ownerMatchesService = owner?.managedProjectId === project.id && owner?.managedServiceId === service.id;
+  const running = Boolean(details?.running || ownerMatchesService);
+  const runningPID = details?.pid || (ownerMatchesService ? owner?.pid ?? 0 : 0);
+  const portConflict = owner !== null && !ownerMatchesService;
+  const portOccupied = !running && owner !== null;
   const lines = details?.logLines ?? [];
   const isBusy = busyAction !== null || details === null;
-  const processState = !details ? 'checking' : busyAction === 'run' ? 'starting' : busyAction === 'stop' || busyAction === 'terminate' ? 'stopping' : running ? 'running' : 'stopped';
-  const processStateLabel = processState === 'checking' ? 'Checking process' : processState === 'starting' ? 'Starting process' : processState === 'stopping' ? 'Stopping process' : running ? 'Running' : 'Stopped';
+  const processState = !details ? 'checking' : busyAction === 'run' ? 'starting' : busyAction === 'stop' || busyAction === 'terminate' ? 'stopping' : running ? 'running' : portOccupied ? 'port-in-use' : 'stopped';
+  const processStateLabel = processState === 'checking' ? 'Checking process' : processState === 'starting' ? 'Starting process' : processState === 'stopping' ? 'Stopping process' : running ? portConflict ? 'Running · port conflict' : 'Running' : portOccupied ? 'Port in use' : 'Stopped';
   return (
     <div className="project-screen">
       <section className="log-panel" aria-label={`${project.name} ${service.name} log stream`}>
@@ -852,7 +904,7 @@ function ProjectScreen({
           {lines.length ? lines.map((line, index) => (
             <div className="log-line" key={`${index}-${line}`}><span className="line-number">{String(index + 1).padStart(3, '0')}</span><span className="line-text">{displayLogLine(line) || ' '}</span></div>
           )) : (
-            <div className="log-empty"><div className="log-empty-mark"><Icon name="terminal" /></div><strong>No output yet</strong><span>{running ? 'Waiting for the service to write its first line.' : 'Run this service to start capturing its output.'}</span></div>
+            <div className="log-empty"><div className="log-empty-mark"><Icon name="terminal" /></div><strong>No output yet</strong><span>{running ? 'Waiting for the service to write its first line.' : portOccupied ? 'A process owns the configured port, but this session did not start it and cannot capture its output.' : 'Run this service to start capturing its output.'}</span></div>
           )}
         </div>
         <div className="log-panel-foot"><span><i className={running ? 'foot-live' : ''} />{running ? 'STREAM ACTIVE' : 'STREAM IDLE'}</span><span>Live output · latest 250 lines</span></div>
@@ -863,12 +915,12 @@ function ProjectScreen({
           <div className="project-heading-copy">
             <p className="eyebrow">PROJECT / {project.name}</p>
             <div className="project-title-row">
-              <span className={`large-status-dot${running ? ' live' : details ? ' stopped' : ' checking'}`} aria-hidden="true" />
+              <span className={`large-status-dot${running || portOccupied ? ' live' : details ? ' stopped' : ' checking'}`} aria-hidden="true" />
               <div className="project-title-copy">
                 <h1>{service.name}</h1>
-                <div className={`process-status${running ? ' live' : ''}`} role="status" aria-live="polite">
+                <div className={`process-status${running || portOccupied ? ' live' : ''}`} role="status" aria-live="polite">
                   <strong>{processStateLabel}</strong>
-                  <span>{running ? `PID ${details?.pid}` : processState === 'checking' ? 'Reading process state' : owner ? `${owner.name} holds the port` : 'No managed process'}</span>
+                  <span>{running ? portConflict && owner ? `PID ${runningPID} · configured port held by ${owner.name} · PID ${owner.pid}` : `PID ${runningPID}` : processState === 'checking' ? 'Reading process state' : portOccupied && owner ? `${owner.name} · PID ${owner.pid} · not matched to this service` : 'No managed process'}</span>
                 </div>
               </div>
             </div>
