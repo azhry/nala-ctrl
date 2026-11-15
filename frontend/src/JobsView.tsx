@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import { GetJobs, GetJobRunLog, GetJobRuns, UpdateJobSchedule } from '../wailsjs/go/main/ProjectManager';
+import { GetJobs, GetJobRunLog, GetJobRuns, RunJobNow, UpdateJobSchedule } from '../wailsjs/go/main/ProjectManager';
 import { Icon } from './icons';
 import type { Job, JobRun, JobRunStatus, JobSchedule } from './types';
 import './JobsView.css';
@@ -34,6 +34,7 @@ function formatInterval(schedule: JobSchedule): string {
 
 type JobRunBinding = Omit<JobRun, 'status'> & { status: string };
 type JobBinding = Omit<Job, 'lastRun'> & { lastRun?: JobRunBinding };
+type ManualRunMessage = { kind: 'status' | 'error'; text: string };
 
 const supportedRunStatuses = new Set<string>(['running', 'healthy', 'unhealthy', 'failed']);
 
@@ -83,6 +84,9 @@ export function JobsView() {
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [scheduleError, setScheduleError] = useState('');
   const [scheduleNotice, setScheduleNotice] = useState('');
+  const [pendingManualRunIds, setPendingManualRunIds] = useState<Set<string>>(() => new Set());
+  const pendingManualRunIdsRef = useRef(new Set<string>());
+  const [manualRunMessages, setManualRunMessages] = useState<Record<string, ManualRunMessage>>({});
 
   const sortedJobs = useMemo(() => [...jobs].sort(compareNextRun), [jobs]);
   const selectedJob = sortedJobs.find((job) => job.id === selectedJobId) ?? null;
@@ -294,6 +298,42 @@ export function JobsView() {
     }
   };
 
+  const runJobNow = async (job: Job) => {
+    if (pendingManualRunIdsRef.current.has(job.id)) return;
+    pendingManualRunIdsRef.current.add(job.id);
+    setPendingManualRunIds(new Set(pendingManualRunIdsRef.current));
+    setManualRunMessages((current) => ({
+      ...current,
+      [job.id]: { kind: 'status', text: `Manual run request for ${job.name} is in progress.` },
+    }));
+
+    try {
+      const run = normalizeRun(await RunJobNow(job.id));
+      selectedRunIdRef.current = run.id;
+      setSelectedRunId(run.id);
+      setLogLines([]);
+      setLogError('');
+      setLogLoading(true);
+      loadedLogKeyRef.current = '';
+      setManualRunMessages((current) => ({
+        ...current,
+        [job.id]: { kind: 'status', text: `${job.name} finished: ${runStatusLabel[run.status]}. The run was added to history.` },
+      }));
+      await refreshJobs(false);
+    } catch (caught) {
+      setManualRunMessages((current) => ({
+        ...current,
+        [job.id]: {
+          kind: 'error',
+          text: `Manual run could not be started: ${caught instanceof Error ? caught.message : String(caught)}`,
+        },
+      }));
+    } finally {
+      pendingManualRunIdsRef.current.delete(job.id);
+      setPendingManualRunIds(new Set(pendingManualRunIdsRef.current));
+    }
+  };
+
   return (
     <section className="jobs-screen" aria-labelledby="jobs-title">
       <header className="jobs-page-heading">
@@ -371,7 +411,27 @@ export function JobsView() {
                     <h2 id="job-detail-title" title={selectedJob.name}>{selectedJob.name}</h2>
                     {selectedJob.description && <p>{selectedJob.description}</p>}
                   </div>
+                  <button
+                    type="button"
+                    className="jobs-run-now-button"
+                    onClick={() => void runJobNow(selectedJob)}
+                    disabled={pendingManualRunIds.has(selectedJob.id) || scheduleSaving}
+                    aria-busy={pendingManualRunIds.has(selectedJob.id)}
+                    aria-label={`Run ${selectedJob.name} now`}
+                  >
+                    <Icon name="play" aria-hidden="true" />
+                    {pendingManualRunIds.has(selectedJob.id) ? 'Running…' : 'Run now'}
+                  </button>
                 </header>
+                {manualRunMessages[selectedJob.id] && (
+                  <p
+                    className={manualRunMessages[selectedJob.id].kind === 'error' ? 'jobs-manual-run-feedback jobs-inline-error' : 'jobs-manual-run-feedback jobs-inline-success'}
+                    role={manualRunMessages[selectedJob.id].kind === 'error' ? 'alert' : 'status'}
+                    aria-live={manualRunMessages[selectedJob.id].kind === 'error' ? 'assertive' : 'polite'}
+                  >
+                    {manualRunMessages[selectedJob.id].text}
+                  </p>
+                )}
 
                 <section className="jobs-schedule-section" aria-labelledby="job-schedule-title">
                   <div className="jobs-schedule-heading">

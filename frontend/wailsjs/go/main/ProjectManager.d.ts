@@ -26,6 +26,8 @@ export function GetWorkspace():Promise<main.WorkspaceState>;
 
 export function LoadFolder(arg1:string):Promise<main.WorkspaceState>;
 
+export function RunJobNow(arg1:string):Promise<main.JobRun>;
+
 export function RunProject(arg1:string):Promise<main.RunResult>;
 
 export function StartHeadlessAPI():Promise<main.HeadlessAPIStatus>;

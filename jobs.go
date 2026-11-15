@@ -56,6 +56,16 @@ type jobDefinition struct {
 	schedule    JobSchedule
 }
 
+type manualJobRequest struct {
+	definition jobDefinition
+	result     chan manualJobResult
+}
+
+type manualJobResult struct {
+	run JobRun
+	err error
+}
+
 var defaultJobDefinitions = []jobDefinition{
 	{id: "minikube-port-forwards", name: "Minikube port forwards", description: "Check and safely recover discovered kubectl port-forwards.", schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 0}},
 	{id: "health-nala-labs", name: "Nala Labs health", description: "Check the loaded backend service at /healthz.", projectName: "nala-labs", schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 10}},
@@ -65,22 +75,27 @@ var defaultJobDefinitions = []jobDefinition{
 }
 
 type JobScheduler struct {
-	mu           sync.RWMutex
-	runMu        sync.Mutex
-	manager      *Manager
-	path         string
-	state        jobsFile
-	loadErr      error
-	errorHandler func(string)
-	ctx          context.Context
-	cancel       context.CancelFunc
-	done         chan struct{}
-	forwardsMu   sync.Mutex
-	forwards     map[string]*managedForward
+	mu               sync.RWMutex
+	runMu            sync.Mutex
+	manager          *Manager
+	path             string
+	state            jobsFile
+	loadErr          error
+	errorHandler     func(string)
+	ctx              context.Context
+	cancel           context.CancelFunc
+	done             chan struct{}
+	manualRequests   chan manualJobRequest
+	manualRunPending map[string]bool
+	forwardsMu       sync.Mutex
+	forwards         map[string]*managedForward
 }
 
 func newJobScheduler(manager *Manager, path string, pathErr error) *JobScheduler {
-	return &JobScheduler{manager: manager, path: path, loadErr: pathErr, forwards: make(map[string]*managedForward)}
+	return &JobScheduler{
+		manager: manager, path: path, loadErr: pathErr, forwards: make(map[string]*managedForward),
+		manualRequests: make(chan manualJobRequest), manualRunPending: make(map[string]bool),
+	}
 }
 
 func (s *JobScheduler) SetErrorHandler(handler func(string)) {
@@ -157,6 +172,47 @@ func (s *JobScheduler) GetJobs() ([]Job, error) {
 		jobs = append(jobs, job)
 	}
 	return jobs, nil
+}
+
+func (s *JobScheduler) RunJobNow(jobID string) (JobRun, error) {
+	definition, exists := definitionForID(jobID)
+	if !exists {
+		return JobRun{}, errors.New("job was not found")
+	}
+
+	s.mu.Lock()
+	if s.loadErr != nil {
+		s.mu.Unlock()
+		return JobRun{}, errors.New("saved jobs could not be run")
+	}
+	if s.cancel == nil || s.ctx == nil || s.ctx.Err() != nil {
+		s.mu.Unlock()
+		return JobRun{}, errors.New("job scheduler is not running")
+	}
+	if s.manualRunPending[jobID] {
+		s.mu.Unlock()
+		return JobRun{}, errors.New("this job already has a manual run pending or running")
+	}
+	s.manualRunPending[jobID] = true
+	ctx := s.ctx
+	s.mu.Unlock()
+
+	request := manualJobRequest{definition: definition, result: make(chan manualJobResult, 1)}
+	select {
+	case s.manualRequests <- request:
+	case <-ctx.Done():
+		s.clearManualRunPending(jobID)
+		return JobRun{}, errors.New("job scheduler stopped before the manual run could start")
+	}
+
+	result := <-request.result
+	return result.run, result.err
+}
+
+func (s *JobScheduler) clearManualRunPending(jobID string) {
+	s.mu.Lock()
+	delete(s.manualRunPending, jobID)
+	s.mu.Unlock()
 }
 
 func (s *JobScheduler) GetJobRuns(jobID string) ([]JobRun, error) {
@@ -270,6 +326,17 @@ func (s *JobScheduler) loop(ctx context.Context, done chan struct{}) {
 			return
 		case now := <-ticker.C:
 			s.runDue(ctx, now)
+		case request := <-s.manualRequests:
+			if ctx.Err() != nil {
+				s.clearManualRunPending(request.definition.id)
+				request.result <- manualJobResult{err: errors.New("job scheduler stopped before the manual run could start")}
+				return
+			}
+			s.runMu.Lock()
+			run, err := s.executeJob(ctx, request.definition)
+			s.runMu.Unlock()
+			s.clearManualRunPending(request.definition.id)
+			request.result <- manualJobResult{run: run, err: err}
 		}
 	}
 }
@@ -317,27 +384,29 @@ func (s *JobScheduler) runDue(ctx context.Context, now time.Time) {
 		if ctx.Err() != nil {
 			return
 		}
-		s.executeJob(ctx, definition)
+		_, _ = s.executeJob(ctx, definition)
 	}
 }
 
-func (s *JobScheduler) executeJob(ctx context.Context, definition jobDefinition) {
+func (s *JobScheduler) executeJob(ctx context.Context, definition jobDefinition) (JobRun, error) {
 	started := time.Now()
-	run := storedJobRun{JobRun: JobRun{ID: newJobRunID(), JobID: definition.id, StartedAt: started, Status: jobStatusRunning, Summary: "The scheduled check is running."}}
+	run := storedJobRun{JobRun: JobRun{ID: newJobRunID(), JobID: definition.id, StartedAt: started, Status: jobStatusRunning, Summary: "The check is running."}}
 	s.mu.Lock()
 	saved := s.findJobLocked(definition.id)
 	if saved == nil {
 		s.mu.Unlock()
-		return
+		return JobRun{}, errors.New("job was not found")
 	}
+	previousRuns := saved.Runs
 	saved.Runs = append(saved.Runs, run)
 	if len(saved.Runs) > jobHistoryLimit {
 		saved.Runs = append([]storedJobRun(nil), saved.Runs[len(saved.Runs)-jobHistoryLimit:]...)
 	}
 	if err := writeJobsFile(s.path, s.state); err != nil {
+		saved.Runs = previousRuns
 		s.mu.Unlock()
-		s.reportError("Nala Ctrl could not save a scheduled job run, so that run was skipped.")
-		return
+		s.reportError("Nala Ctrl could not save a job run, so that run was skipped.")
+		return JobRun{}, errors.New("the manual job run could not be saved")
 	}
 	s.mu.Unlock()
 	var output []string
@@ -362,8 +431,10 @@ func (s *JobScheduler) executeJob(ctx context.Context, definition jobDefinition)
 	}
 	s.mu.Unlock()
 	if saveErr != nil {
-		s.reportError("Nala Ctrl could not save the completed scheduled job run.")
+		s.reportError("Nala Ctrl could not save the completed job run.")
+		return run.JobRun, errors.New("the completed manual job run could not be saved")
 	}
+	return run.JobRun, nil
 }
 
 func (s *JobScheduler) runProjectHealthCheck(ctx context.Context, projectName string) (string, string, []string) {

@@ -34,8 +34,13 @@
 .jobs-timeline-copy strong { overflow:hidden; color:#35453a; font-size:11px; font-weight:650; text-overflow:ellipsis; white-space:nowrap; }
 .jobs-timeline-copy small { display:-webkit-box; overflow:hidden; color:var(--ink-muted); font-size:10px; line-height:1.4; -webkit-box-orient:vertical; -webkit-line-clamp:2; }
 .jobs-detail-panel { padding-left:18px; border-left:1px solid #dce4dc; }
-.jobs-detail-heading { min-width:0; padding:3px 0 13px; border-bottom:1px solid #dce4dc; }
-.jobs-detail-title-copy { min-width:0; }
+.jobs-detail-heading { display:flex; min-width:0; align-items:flex-start; justify-content:space-between; gap:14px; padding:3px 0 13px; border-bottom:1px solid #dce4dc; }
+.jobs-detail-title-copy { min-width:0; flex:1 1 auto; }
+.jobs-run-now-button { display:inline-flex; min-height:38px; flex:0 0 auto; align-items:center; justify-content:center; gap:7px; padding:0 11px; color:#f8faf6; border:1px solid #2f4a38; border-radius:6px; background:#35523e; font-family:var(--sans); font-size:10px; font-weight:650; cursor:pointer; transition:background .14s ease,border-color .14s ease; }
+.jobs-run-now-button svg { width:13px; height:13px; }
+.jobs-run-now-button:hover:not(:disabled) { border-color:#42634b; background:#42634b; }
+.jobs-run-now-button:disabled { color:#e0e8e0; border-color:#607364; background:#607364; cursor:progress; }
+.jobs-manual-run-feedback { margin:9px 0 0; }
 .jobs-detail-title-copy .eyebrow { margin:0 0 5px; font-size:8px; }
 .jobs-detail-title-copy h2 { overflow:hidden; margin:0; color:#26342c; font-family:var(--display); font-size:25px; font-weight:500; letter-spacing:-.6px; line-height:1.1; text-overflow:ellipsis; white-space:nowrap; }
 .jobs-detail-title-copy>p:not(.eyebrow) { margin:6px 0 0; color:var(--ink-muted); font-size:10px; line-height:1.5; }
@@ -108,6 +113,8 @@
 }
 
 @media (max-width:420px) {
+  .jobs-detail-heading { align-items:flex-start; flex-direction:column; }
+  .jobs-run-now-button { align-self:flex-start; }
   .jobs-schedule-fields { grid-template-columns:minmax(0,1fr); }
   .jobs-error-banner { align-items:stretch; flex-direction:column; }
   .jobs-error-banner .secondary-button { width:100%; }

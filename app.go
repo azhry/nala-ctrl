@@ -194,6 +194,10 @@ func (p *ProjectManager) GetJobs() ([]Job, error) {
 	return p.jobs.GetJobs()
 }
 
+func (p *ProjectManager) RunJobNow(jobID string) (JobRun, error) {
+	return p.jobs.RunJobNow(jobID)
+}
+
 func (p *ProjectManager) GetJobRuns(jobID string) ([]JobRun, error) {
 	return p.jobs.GetJobRuns(jobID)
 }
