@@ -758,12 +758,41 @@ function ProjectOverview({
   onSelectService: (service: Project['services'][number]) => void;
   onResumeSetup: () => void;
 }) {
+  const projectIDs = projects.map((project) => project.id).join('\u0000');
+  const [branchStates, setBranchStates] = useState<Record<string, OverviewProjectBranchState>>({});
+
+  useEffect(() => {
+    const projectIds = [...new Set(projectIDs.split('\u0000').filter(Boolean))];
+    let active = true;
+    const loadingStates: Record<string, OverviewProjectBranchState> = {};
+    projectIds.forEach((projectId) => { loadingStates[projectId] = { projectId, type: 'loading' }; });
+    setBranchStates(loadingStates);
+
+    projectIds.forEach((projectId) => {
+      GetProjectGitBranchState(projectId)
+        .then((result) => {
+          if (!active) return;
+          const branchState: OverviewProjectBranchState = !result.available
+            ? { projectId, type: 'not-git' }
+            : !result.currentBranch
+              ? { projectId, type: 'detached' }
+              : { projectId, type: 'current', branch: result.currentBranch };
+          setBranchStates((current) => ({ ...current, [projectId]: branchState }));
+        })
+        .catch(() => {
+          if (active) setBranchStates((current) => ({ ...current, [projectId]: { projectId, type: 'error' } }));
+        });
+    });
+
+    return () => { active = false; };
+  }, [projectIDs]);
+
   return (
     <section className="overview-screen" aria-labelledby="overview-title">
       <header className="overview-heading">
         <p className="eyebrow">LOCAL WORKSPACE</p>
         <h1 id="overview-title">Project overview</h1>
-        <p>Select a service to inspect its process and output.</p>
+        <p>Select a process to inspect its runtime and output.</p>
       </header>
       {needsConfigFolder && (
         <div className="pending-setup-banner" role="status">
@@ -771,43 +800,64 @@ function ProjectOverview({
           <button className="secondary-button" onClick={onResumeSetup}>Finish setup for {folderName(needsConfigFolder)}</button>
         </div>
       )}
-      <div className="overview-project-list">
-        {projects.map((project) => (
-          <section key={project.id} className="overview-project" aria-label={`${project.name} project`}>
-            <header className="overview-project-head">
-              <div><h2>{project.name}</h2><p title={project.folder}>{displayFolderPath(project.folder)}</p></div>
-              <span>{project.services.length} {project.services.length === 1 ? 'service' : 'services'}</span>
-            </header>
-            {project.services.length > 0 ? (
-              <div className="overview-service-list" role="group" aria-label={`${project.name} services`}>
-                {project.services.map((service) => {
-                  const status = serviceStatuses[service.id];
-                  const owner = status?.portOwner;
-                  const ownerMatchesService = owner?.managedProjectId === project.id && owner?.managedServiceId === service.id;
-                  const portConflict = Boolean(owner && !ownerMatchesService);
-                  const live = Boolean(status?.running || ownerMatchesService);
-                  const livePID = status?.pid || (ownerMatchesService ? owner?.pid ?? 0 : 0);
-                  const stateLabel = status
-                    ? live
-                      ? `Running · PID ${livePID}${portConflict && owner ? ` · port held by ${owner.name} · PID ${owner.pid}` : ''}`
-                      : owner
-                        ? `Port in use · ${owner.name} · PID ${owner.pid}`
-                        : 'Stopped'
-                    : 'Checking status';
-                  return (
-                    <button key={service.id} className="overview-service" onClick={() => onSelectService(service)} aria-label={`${project.name}, ${service.name}, ${stateLabel}`}>
-                      <span className="overview-service-copy"><strong>{service.name}</strong><small>{service.port ? `PORT ${service.port}` : 'NO PORT CHECK'}</small></span>
-                      <span className={`overview-service-status${live ? ' live' : ''}`}><i aria-hidden="true" />{stateLabel}</span>
-                      <Icon name="chevron" />
-                    </button>
-                  );
-                })}
-              </div>
-            ) : <p className="overview-no-services">No services configured in this nala.yml.</p>}
-          </section>
-        ))}
+      <div className="overview-service-list" role="group" aria-label="Loaded project processes">
+        {projects.flatMap((project) => project.services.map((service) => {
+          const status = serviceStatuses[service.id];
+          const owner = status?.portOwner;
+          const ownerMatchesService = owner?.managedProjectId === project.id && owner?.managedServiceId === service.id;
+          const portConflict = Boolean(owner && !ownerMatchesService);
+          const live = Boolean(status?.running || ownerMatchesService);
+          const livePID = status?.pid || (ownerMatchesService ? owner?.pid ?? 0 : 0);
+          const stateLabel = status
+            ? live
+              ? `Running · PID ${livePID}${portConflict && owner ? ` · port held by ${owner.name} · PID ${owner.pid}` : ''}`
+              : owner
+                ? `Port in use · ${owner.name} · PID ${owner.pid}`
+                : 'Stopped'
+            : 'Checking status';
+          const branchState = branchStates[project.id] ?? { projectId: project.id, type: 'loading' as const };
+
+          return (
+            <button key={`${project.id}:${service.id}`} className="overview-service" onClick={() => onSelectService(service)} aria-label={`${project.name}, ${service.name}, ${service.port ? `port ${service.port}` : 'no port check'}, ${stateLabel}`}>
+              <span className="overview-process-project" title={project.folder}>{project.name}</span>
+              <OverviewProjectBranch branchState={branchState} />
+              <strong className="overview-process-name">{service.name}</strong>
+              <small className="overview-process-port">{service.port ? `PORT ${service.port}` : 'NO PORT CHECK'}</small>
+              <span className={`overview-service-status${live ? ' live' : ''}`}><i aria-hidden="true" />{stateLabel}</span>
+              <Icon name="chevron" />
+            </button>
+          );
+        }))}
       </div>
     </section>
+  );
+}
+
+type OverviewProjectBranchState =
+  | { projectId: string; type: 'loading' | 'not-git' | 'detached' | 'error' }
+  | { projectId: string; type: 'current'; branch: string };
+
+function OverviewProjectBranch({ branchState: currentState }: { branchState: OverviewProjectBranchState }) {
+  const branchLabel = currentState.type === 'loading'
+    ? 'Loading branch...'
+    : currentState.type === 'current'
+      ? currentState.branch
+      : currentState.type === 'not-git'
+        ? 'Not a Git repository'
+        : currentState.type === 'detached'
+          ? 'Detached HEAD'
+          : 'Branch unavailable';
+
+  return (
+    <div
+      className={`overview-branch-status${currentState.type === 'current' ? ' has-branch' : ` is-${currentState.type}`}`}
+      role="status"
+      aria-live="polite"
+      aria-busy={currentState.type === 'loading'}
+    >
+      <span className="overview-branch-label">BRANCH</span>
+      <code title={currentState.type === 'current' ? currentState.branch : undefined}>{branchLabel}</code>
+    </div>
   );
 }
 
