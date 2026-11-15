@@ -355,7 +355,7 @@ func (s *JobScheduler) runMinikubePortForwardCheck(ctx context.Context) (string,
 			return jobStatusFailed, "The configured local port belongs to a different process; it was left untouched.", append(output, fmt.Sprintf("Local port %d belongs to a different process.", spec.LocalPort))
 		}
 		if current != nil && len(owners) == 1 && portForwardHealthy(spec) {
-			output = append(output, fmt.Sprintf("127.0.0.1:%d to remote port %d is healthy.", spec.LocalPort, spec.RemotePort))
+			output = append(output, healthyForwardOutput(spec))
 			continue
 		}
 		if current != nil {
@@ -379,20 +379,42 @@ func (s *JobScheduler) runMinikubePortForwardCheck(ctx context.Context) (string,
 			}
 			return jobStatusFailed, "The restarted port-forward did not become healthy.", append(output, fmt.Sprintf("The port-forward on local port %d did not become healthy.", spec.LocalPort))
 		}
-		output = append(output, fmt.Sprintf("Restarted the port-forward on local port %d using its saved mapping.", spec.LocalPort))
+		if spec.RemotePort == mongoWireProtocolPort {
+			output = append(output, fmt.Sprintf("Restarted the port-forward on local port %d and it answered the MongoDB hello handshake.", spec.LocalPort))
+		} else {
+			output = append(output, fmt.Sprintf("Restarted the port-forward on local port %d using its saved mapping.", spec.LocalPort))
+		}
 	}
 	return jobStatusHealthy, "All configured kubectl port-forwards are healthy.", output
 }
 
 func portForwardHealthy(spec portForwardSpec) bool {
+	target := func(address string) string {
+		return net.JoinHostPort(address, strconv.Itoa(spec.LocalPort))
+	}
+	if spec.RemotePort == mongoWireProtocolPort {
+		for _, address := range spec.Addresses {
+			if probeMongoHello(target(address), mongoHelloTimeout) == nil {
+				return true
+			}
+		}
+		return false
+	}
 	for _, address := range spec.Addresses {
-		connection, err := net.DialTimeout("tcp", net.JoinHostPort(address, strconv.Itoa(spec.LocalPort)), 500*time.Millisecond)
+		connection, err := net.DialTimeout("tcp", target(address), 500*time.Millisecond)
 		if err == nil {
 			_ = connection.Close()
 			return true
 		}
 	}
 	return false
+}
+
+func healthyForwardOutput(spec portForwardSpec) string {
+	if spec.RemotePort == mongoWireProtocolPort {
+		return fmt.Sprintf("127.0.0.1:%d to remote port %d is healthy and answered the MongoDB hello handshake.", spec.LocalPort, spec.RemotePort)
+	}
+	return fmt.Sprintf("127.0.0.1:%d to remote port %d is healthy.", spec.LocalPort, spec.RemotePort)
 }
 
 func (s *JobScheduler) startPortForward(ctx context.Context, spec portForwardSpec) (*managedForward, error) {

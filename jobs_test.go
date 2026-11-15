@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
+	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -363,4 +367,172 @@ func TestBoundJobOutputLimitsLinesAndBytes(t *testing.T) {
 	if bytes > jobOutputByteLimit {
 		t.Fatalf("bounded output has %d bytes, limit is %d", bytes, jobOutputByteLimit)
 	}
+}
+
+func TestMongoDBPortForwardHealthRequiresWireProtocolResponse(t *testing.T) {
+	t.Run("tcp listener without MongoDB response is unhealthy", func(t *testing.T) {
+		listener := testLoopbackListener(t)
+		accepted := make(chan struct{})
+		go func() {
+			connection, err := listener.Accept()
+			if err != nil {
+				close(accepted)
+				return
+			}
+			_ = connection.Close()
+			close(accepted)
+		}()
+		spec := testForwardSpec(listener.Addr(), 27017)
+		if portForwardHealthy(spec) {
+			t.Fatal("a TCP listener without a MongoDB hello response was reported healthy")
+		}
+		<-accepted
+	})
+
+	t.Run("MongoDB hello response is healthy", func(t *testing.T) {
+		listener := testLoopbackListener(t)
+		reply := testBSONDocument(
+			testBSONDouble("ok", 1),
+			testBSONBool("isWritablePrimary", true),
+			testBSONInt32("maxWireVersion", 21),
+			testBSONString("msg", "isdbgrid"),
+		)
+		go testServeMongoReply(listener, reply)
+		spec := testForwardSpec(listener.Addr(), 27017)
+		if !portForwardHealthy(spec) {
+			t.Fatal("a valid MongoDB hello response was reported unhealthy")
+		}
+	})
+
+	t.Run("MongoDB error response is unhealthy", func(t *testing.T) {
+		listener := testLoopbackListener(t)
+		reply := testBSONDocument(
+			testBSONDouble("ok", 0),
+			testBSONString("errmsg", "not authorized"),
+		)
+		go testServeMongoReply(listener, reply)
+		spec := testForwardSpec(listener.Addr(), 27017)
+		if portForwardHealthy(spec) {
+			t.Fatal("a MongoDB error response was reported healthy")
+		}
+	})
+
+	t.Run("non-MongoDB mapping keeps TCP reachability", func(t *testing.T) {
+		listener := testLoopbackListener(t)
+		held := make(chan struct{})
+		go func() {
+			connection, err := listener.Accept()
+			if err != nil {
+				close(held)
+				return
+			}
+			close(held)
+			<-held
+			_ = connection.Close()
+		}()
+		spec := testForwardSpec(listener.Addr(), 80)
+		if !portForwardHealthy(spec) {
+			t.Fatal("a reachable non-MongoDB forward was reported unhealthy")
+		}
+		<-held
+	})
+}
+
+func testLoopbackListener(t *testing.T) net.Listener {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	return listener
+}
+
+func testForwardSpec(address net.Addr, remotePort int) portForwardSpec {
+	port, err := strconv.Atoi(strings.TrimSpace(address.String()[strings.LastIndex(address.String(), ":")+1:]))
+	if err != nil {
+		panic(err)
+	}
+	return portForwardSpec{LocalPort: port, RemotePort: remotePort, Addresses: []string{"127.0.0.1"}}
+}
+
+// testServeMongoReply reads one OP_MSG request and answers it with a body
+// document wrapped in a single OP_MSG reply.
+func testServeMongoReply(listener net.Listener, document []byte) {
+	connection, err := listener.Accept()
+	if err != nil {
+		return
+	}
+	defer connection.Close()
+	header := make([]byte, 16)
+	if _, err := io.ReadFull(connection, header); err != nil {
+		return
+	}
+	size := int(binary.LittleEndian.Uint32(header[0:4]))
+	if size < 16 || size > 4096 {
+		return
+	}
+	if _, err := io.ReadFull(connection, make([]byte, size-16)); err != nil {
+		return
+	}
+	reply := make([]byte, 21+len(document))
+	binary.LittleEndian.PutUint32(reply[0:4], uint32(len(reply)))
+	binary.LittleEndian.PutUint32(reply[4:8], 2)
+	binary.LittleEndian.PutUint32(reply[8:12], binary.LittleEndian.Uint32(header[4:8]))
+	binary.LittleEndian.PutUint32(reply[12:16], 2013)
+	reply[20] = 0
+	copy(reply[21:], document)
+	_, _ = connection.Write(reply)
+}
+
+type testBSONElement struct {
+	kind  byte
+	name  string
+	value []byte
+}
+
+func testBSONDocument(elements ...testBSONElement) []byte {
+	size := 5
+	for _, element := range elements {
+		size += 1 + len(element.name) + 1 + len(element.value)
+	}
+	document := make([]byte, size)
+	binary.LittleEndian.PutUint32(document[0:4], uint32(size))
+	offset := 4
+	for _, element := range elements {
+		document[offset] = element.kind
+		offset++
+		offset += copy(document[offset:], element.name)
+		document[offset] = 0
+		offset++
+		offset += copy(document[offset:], element.value)
+	}
+	document[size-1] = 0
+	return document
+}
+
+func testBSONDouble(name string, value float64) testBSONElement {
+	raw := make([]byte, 8)
+	binary.LittleEndian.PutUint64(raw, math.Float64bits(value))
+	return testBSONElement{kind: 0x01, name: name, value: raw}
+}
+
+func testBSONString(name, value string) testBSONElement {
+	raw := make([]byte, 4+len(value)+1)
+	binary.LittleEndian.PutUint32(raw[0:4], uint32(len(value)+1))
+	copy(raw[4:], value)
+	return testBSONElement{kind: 0x02, name: name, value: raw}
+}
+
+func testBSONBool(name string, value bool) testBSONElement {
+	if value {
+		return testBSONElement{kind: 0x08, name: name, value: []byte{1}}
+	}
+	return testBSONElement{kind: 0x08, name: name, value: []byte{0}}
+}
+
+func testBSONInt32(name string, value int32) testBSONElement {
+	raw := make([]byte, 4)
+	binary.LittleEndian.PutUint32(raw, uint32(value))
+	return testBSONElement{kind: 0x10, name: name, value: raw}
 }
