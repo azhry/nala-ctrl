@@ -14,6 +14,14 @@ import (
 )
 
 func findPortOwner(port int) (*ProcessIdentity, error) {
+	owners, err := findPortOwners(port)
+	if err != nil || len(owners) == 0 {
+		return nil, err
+	}
+	return owners[0], nil
+}
+
+func findPortOwners(port int) ([]*ProcessIdentity, error) {
 	connections, err := net.Connections("tcp")
 	if err != nil {
 		return nil, err
@@ -31,10 +39,14 @@ func findPortOwner(port int) (*ProcessIdentity, error) {
 		owners = append(owners, connection.Pid)
 	}
 	if len(owners) == 0 {
-		return nil, nil
+		return []*ProcessIdentity{}, nil
 	}
 	sort.Slice(owners, func(i, j int) bool { return owners[i] < owners[j] })
-	return processIdentity(owners[0]), nil
+	identities := make([]*ProcessIdentity, 0, len(owners))
+	for _, pid := range owners {
+		identities = append(identities, processIdentity(pid))
+	}
+	return identities, nil
 }
 
 func processIdentity(pid int32) *ProcessIdentity {

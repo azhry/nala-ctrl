@@ -29,6 +29,12 @@ projects:
 
 Each folder you add contributes one project group to the list. Its services have separate status, Run/Stop controls, and log streams. Switching between projects or services does not stop running commands. Closing the app stops every process it started.
 
+## Scheduled jobs
+
+The Jobs tab creates five local jobs on first use: a Minikube port-forward check and `/healthz` checks for the loaded `nala-labs`, `nala-svc`, `nala-trace`, and `nala-grow` backend services. Their default hourly runs are staggered at local clock minutes :00, :10, :20, :30, and :40. One scheduler worker runs jobs sequentially. Each project health check uses only the backend service's configured port and treats HTTP 2xx as healthy.
+
+The Jobs view shows upcoming times, recent runs, and bounded output, and lets you change an interval and offset or run a job immediately. Manual runs use the same single worker and checks as scheduled runs, appear in history, and leave the next scheduled time unchanged. Job definitions, schedules, run history, and output are stored locally in the user's Nala Ctrl config directory. Minikube recovery is limited to uniquely identified `kubectl port-forward` commands with one fixed local-to-remote port mapping bound to loopback. Ambiguous commands, unsupported flags, non-loopback listeners, and ports owned by another process are left untouched and recorded as failed checks. Switching between Projects and Jobs does not stop project services.
+
 ## Local agent API
 
 The desktop app starts a local JSON API at `127.0.0.1:47654` during Wails startup. It uses the same manager as the desktop UI, so its workspace, service state, run, stop, logs, and branch routes refer to that app instance. The in-app headless API at `127.0.0.1:47653` shares this manager and also reports `mode=desktop`. Service operations through either endpoint update the same process state and UI events. The desktop API does not require a token or authentication header.

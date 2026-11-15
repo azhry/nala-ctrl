@@ -18,6 +18,7 @@ import (
 type ProjectManager struct {
 	ctx                 context.Context
 	manager             *Manager
+	jobs                *JobScheduler
 	agentAPI            *http.Server
 	headlessAPI         *headlessAPIController
 	configRefreshCancel context.CancelFunc
@@ -29,12 +30,19 @@ const projectConfigRefreshInterval = 2 * time.Second
 
 func NewProjectManager() *ProjectManager {
 	manager := &ProjectManager{manager: NewManager()}
+	jobsPath, jobsPathErr := defaultJobsStorePath()
+	manager.jobs = newJobScheduler(manager.manager, jobsPath, jobsPathErr)
 	manager.headlessAPI = newHeadlessAPIControllerForManager(defaultAgentAPIListen, manager.manager, manager.emitWorkspaceChanged)
 	return manager
 }
 
 func (p *ProjectManager) startup(ctx context.Context) {
 	p.ctx = ctx
+	p.jobs.SetErrorHandler(func(message string) {
+		if p.ctx != nil {
+			runtime.LogError(p.ctx, message)
+		}
+	})
 	refreshCtx, cancelRefresh := context.WithCancel(ctx)
 	p.configRefreshCancel = cancelRefresh
 	p.configRefreshDone = make(chan struct{})
@@ -57,6 +65,9 @@ func (p *ProjectManager) startup(ctx context.Context) {
 	p.manager.SetStateHandler(func(event ProjectStateEvent) {
 		runtime.EventsEmit(p.ctx, projectStateEventName, event)
 	})
+	if err := p.jobs.Start(ctx); err != nil {
+		runtime.LogError(p.ctx, "Nala Ctrl scheduled jobs could not start.")
+	}
 	listener, err := listenAgentAPI(desktopAgentAPIListen)
 	if err != nil {
 		runtime.LogError(p.ctx, fmt.Sprintf("Nala Ctrl agent API could not start: %v", err))
@@ -103,6 +114,7 @@ func (p *ProjectManager) shutdown(ctx context.Context) {
 	if _, err := p.headlessAPI.Stop(); err != nil {
 		runtime.LogError(p.ctx, fmt.Sprintf("Nala Ctrl headless API shutdown failed: %v", err))
 	}
+	p.jobs.Stop()
 	if err := p.manager.StopAll(); err != nil {
 		runtime.LogError(p.ctx, fmt.Sprintf("Nala Ctrl service shutdown failed: %v", err))
 	}
@@ -176,4 +188,24 @@ func (p *ProjectManager) TerminatePortOwnerAndRun(projectID string, pid int32, c
 
 func (p *ProjectManager) StopProject(projectID string) error {
 	return p.manager.StopProject(projectID)
+}
+
+func (p *ProjectManager) GetJobs() ([]Job, error) {
+	return p.jobs.GetJobs()
+}
+
+func (p *ProjectManager) RunJobNow(jobID string) (JobRun, error) {
+	return p.jobs.RunJobNow(jobID)
+}
+
+func (p *ProjectManager) GetJobRuns(jobID string) ([]JobRun, error) {
+	return p.jobs.GetJobRuns(jobID)
+}
+
+func (p *ProjectManager) GetJobRunLog(jobID, runID string) ([]string, error) {
+	return p.jobs.GetJobRunLog(jobID, runID)
+}
+
+func (p *ProjectManager) UpdateJobSchedule(jobID string, schedule JobSchedule) (Job, error) {
+	return p.jobs.UpdateJobSchedule(jobID, schedule)
 }

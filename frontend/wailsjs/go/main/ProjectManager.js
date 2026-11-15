@@ -18,6 +18,18 @@ export function GetHeadlessAPIStatus() {
   return window['go']['main']['ProjectManager']['GetHeadlessAPIStatus']();
 }
 
+export function GetJobRunLog(arg1, arg2) {
+  return window['go']['main']['ProjectManager']['GetJobRunLog'](arg1, arg2);
+}
+
+export function GetJobRuns(arg1) {
+  return window['go']['main']['ProjectManager']['GetJobRuns'](arg1);
+}
+
+export function GetJobs() {
+  return window['go']['main']['ProjectManager']['GetJobs']();
+}
+
 export function GetProjectDetails(arg1) {
   return window['go']['main']['ProjectManager']['GetProjectDetails'](arg1);
 }
@@ -36,6 +48,10 @@ export function GetWorkspace() {
 
 export function LoadFolder(arg1) {
   return window['go']['main']['ProjectManager']['LoadFolder'](arg1);
+}
+
+export function RunJobNow(arg1) {
+  return window['go']['main']['ProjectManager']['RunJobNow'](arg1);
 }
 
 export function RunProject(arg1) {
@@ -64,4 +80,8 @@ export function SyncProjectGitWithMain(arg1) {
 
 export function TerminatePortOwnerAndRun(arg1, arg2, arg3) {
   return window['go']['main']['ProjectManager']['TerminatePortOwnerAndRun'](arg1, arg2, arg3);
+}
+
+export function UpdateJobSchedule(arg1, arg2) {
+  return window['go']['main']['ProjectManager']['UpdateJobSchedule'](arg1, arg2);
 }

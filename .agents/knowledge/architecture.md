@@ -30,6 +30,13 @@ Nala Ctrl is a local desktop process manager. The Go application and process man
 - Project detail snapshots contain at most 250 recent lines and read at most the latest 512 KiB of the log file.
 - The desktop app's Fix Docker action controls only the local Docker Desktop installation. Before restarting, it checks the current boot logs for the known secrets-engine `engine.sock` rename failure. If that exact error is present and the corresponding zero-length Windows reparse point still exists, it checks whether either local Desktop context responds to `docker info`. Only while both are unavailable does it use WSL to move the socket to a unique `.codex-stale-*` backup path without deleting or replacing it. It then runs `docker desktop restart`, falls back to `docker desktop start --detach` if restart fails, and checks the `desktop-linux` and `desktop-windows` contexts until one responds to `docker info` or the bounded recovery timeout expires. The targeted repair requires WSL. The action does not reset Docker data, shut down WSL globally, or expose a Docker operation through the headless API. Restarting Docker Desktop interrupts running containers.
 
+## Scheduled jobs
+
+- The desktop app stores job definitions, schedules, bounded run history, and bounded output in `jobs.json` under the user's Nala Ctrl config directory. On first use it seeds a Minikube port-forward job and four backend health jobs for `nala-labs`, `nala-svc`, `nala-trace`, and `nala-grow`. Defaults run hourly at local offsets :00, :10, :20, :30, and :40. A single scheduler worker executes due jobs and manual Run now requests sequentially. Manual runs use the same checks and history, do not advance the next scheduled time, and cannot be queued twice for the same job while pending or running. Schedules are interval/offset pairs and edits are validated and saved atomically.
+- A project health job resolves exactly one explicitly loaded project by folder-derived name, then its `backend` service. It uses that service's configured port and performs a bounded loopback HTTP GET to `/healthz`. HTTP 2xx is healthy. The job does not read configured service environment values or include response bodies in run output. A missing/ambiguous project, backend, or port is a failed run.
+- The Minikube job is the only job allowed to inspect unrelated local processes. It looks for commands containing `port-forward`, then accepts only the direct `kubectl` executable with a uniquely verifiable PID, creation time, executable, command, working directory, one fixed local-to-remote port mapping, and loopback-only bind addresses. Unsupported options or ambiguous command/port ownership produce a failed run and leave processes untouched. It probes each saved local forward and may restart only that exact identity or the same validated saved command when its local port is free. It never terminates another port owner. Recreated kubectl processes are stopped when Nala Ctrl shuts down; existing forwards that the app did not start remain running.
+- The job store persists only allowlisted kubectl arguments required to reproduce a safe forward, never process environment values or child stdout/stderr. Run output contains bounded status summaries rather than raw command lines or kubectl diagnostics. The app keeps at most 50 runs per job, each with at most 200 output lines and 24 KiB of text.
+
 ## Local agent API
 
 - The Wails desktop app starts the JSON HTTP API at `127.0.0.1:47654` during startup, using the same `ProjectManager.manager` as the UI. Health reports `{"ok":true,"mode":"desktop"}`. The API closes before Wails stops the manager's services.
@@ -50,10 +57,12 @@ Nala Ctrl is a local desktop process manager. The Go application and process man
 | --- | --- |
 | `config.go` | One-project-per-file `projects` service map schema, validation, stable folder/service identities, path resolution, port inference from common flags, `--addr host:port`, and known defaults, plus first config creation. |
 | `manager.go` | Added-project and service registry, process lifecycle by service identity, exact-owner confirmation, and log tail reads. |
+| `jobs.go`, `jobs_store.go` | Local schedules, single-worker execution, bounded run history/output, local health checks, and private atomic job-state persistence. |
+| `job_port_forwards.go` | Strict `kubectl port-forward` discovery, loopback health probes, identity rechecks, and bounded recovery. |
 | `docker_recovery.go`, `docker_recovery_windows.go` | Local Docker Desktop socket repair, restart/start recovery, and bounded local-engine readiness checks for the desktop app. |
 | `ports.go`, `process_windows.go`, `process_unix.go` | Listening socket ownership and platform process control. |
 | `log_writer.go` | Append output and emit line/state event types. |
-| `app.go` | Wails-bound app methods and runtime event wiring. |
+| `app.go` | Wails-bound project and job methods, app startup/shutdown, and runtime event wiring. |
 | `agent_api.go` | Loopback-only HTTP routes, safe agent DTOs, and headless CLI dispatch. |
 | `frontend/src/App.tsx` | Workspace, project status, run/stop, conflict confirmation, and log display. |
 

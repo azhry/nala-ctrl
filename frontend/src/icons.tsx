@@ -1,6 +1,6 @@
 import type { ReactNode, SVGProps } from 'react';
 
-export type IconName = 'folder' | 'folder-plus' | 'server' | 'play' | 'stop' | 'refresh' | 'chevron' | 'terminal' | 'warning' | 'close' | 'check' | 'arrow' | 'spark';
+export type IconName = 'folder' | 'folder-plus' | 'server' | 'play' | 'stop' | 'refresh' | 'clock' | 'chevron' | 'terminal' | 'warning' | 'close' | 'check' | 'arrow' | 'spark';
 
 export function Icon({ name, ...props }: SVGProps<SVGSVGElement> & { name: IconName }) {
   const common = { fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const };
@@ -11,6 +11,7 @@ export function Icon({ name, ...props }: SVGProps<SVGSVGElement> & { name: IconN
     play: <><path {...common} d="M8.2 5.7a1 1 0 0 1 1.5-.9l8.2 5.2a1.2 1.2 0 0 1 0 2l-8.2 5.2a1 1 0 0 1-1.5-.9z"/></>,
     stop: <><rect {...common} x="5.5" y="5.5" width="13" height="13" rx="2"/></>,
     refresh: <><path {...common} d="M20 7v5h-5M4 17v-5h5"/><path {...common} d="M5.8 9A7 7 0 0 1 18 6.8L20 12M4 12l2 5.2A7 7 0 0 0 18.2 15"/></>,
+    clock: <><circle {...common} cx="12" cy="12" r="8.5"/><path {...common} d="M12 7v5l3.3 2"/></>,
     chevron: <><path {...common} d="m9 5 7 7-7 7"/></>,
     terminal: <><rect {...common} x="3.2" y="4.2" width="17.6" height="15.6" rx="2"/><path {...common} d="m7 9 2.7 2.5L7 14m5.5 0h4.2"/></>,
     warning: <><path {...common} d="M10.3 4.9 3.8 16.2a1.8 1.8 0 0 0 1.6 2.7h13.2a1.8 1.8 0 0 0 1.6-2.7L13.7 4.9a2 2 0 0 0-3.4 0Z"/><path {...common} d="M12 9v4m0 2.6h.01"/></>,

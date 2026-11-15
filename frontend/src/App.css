@@ -11,6 +11,11 @@
 .brand-type strong { color:#f1f3ed; font-size:17px; font-weight:650; letter-spacing:-.65px; line-height:1; }
 .brand-type strong span { color:var(--sage); font-weight:450; }
 .brand-type small { color:var(--ink-muted-dark); font-family:var(--mono); font-size:9px; letter-spacing:1.1px; }
+.main-view-nav { display:flex; flex-direction:column; gap:3px; margin:0 0 20px; padding:0 2px; }
+.main-view-link { display:flex; min-height:44px; align-items:center; gap:10px; padding:0 10px; color:#aebbb1; border:1px solid transparent; border-radius:6px; background:transparent; font-family:var(--sans); font-size:11px; font-weight:560; text-align:left; cursor:pointer; transition:background .16s ease,color .16s ease,border-color .16s ease; }
+.main-view-link:hover { color:#eef2ed; border-color:rgba(174,210,184,.1); background:rgba(255,255,255,.045); }
+.main-view-link.is-current { color:#eef2ed; border-color:rgba(174,210,184,.16); background:rgba(174,210,184,.09); font-weight:640; }
+.main-view-link svg { width:14px; height:14px; color:#a8c4ad; }
 .project-nav-head,.eyebrow,.config-preview>span,.welcome-footer,.local-indicator,.log-panel-foot,.process-pid span { font-family:var(--mono); font-size:9px; font-weight:600; letter-spacing:1.2px; }
 .project-nav-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:0 8px 10px; color:var(--ink-muted-dark); }
 .add-project-button { display:grid; width:44px; height:44px; place-items:center; color:#9eafa2; border:1px solid rgba(190,221,200,.14); border-radius:6px; background:rgba(255,255,255,.025); cursor:pointer; }
@@ -301,6 +306,8 @@ button:focus-visible,.text-field:focus-visible { outline:2px solid #829e86; outl
   .app-shell { display:block; width:100%; height:auto; min-height:100vh; overflow:visible; }
   .sidebar { width:100%; min-height:0; padding:15px 16px 12px; border-right:0; border-bottom:1px solid rgba(255,255,255,.06); }
   .brand-lockup { margin:0 4px 14px; }
+  .main-view-nav { flex-direction:row; gap:7px; margin:0 0 8px; padding:0; }
+  .main-view-link { flex:1; }
   .project-nav-head { margin:19px 7px 8px; }
   .project-list { min-height:auto; flex:none; flex-direction:row; gap:9px; overflow-x:auto; overflow-y:hidden; padding-bottom:4px; }
   .project-group { width:min(74vw,235px); flex:0 0 auto; }
