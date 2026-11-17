@@ -18,7 +18,7 @@ func prepareCommand(command *exec.Cmd) error {
 	return nil
 }
 
-func terminateProcessTree(pid int32) error {
+func terminateProcessTree(pid int32, _ int64) error {
 	group := -int(pid)
 	if err := syscall.Kill(group, syscall.SIGTERM); err != nil {
 		if errors.Is(err, syscall.ESRCH) {

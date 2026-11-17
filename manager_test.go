@@ -80,6 +80,97 @@ func TestManagedProcessLifecycleAndLogCapture(t *testing.T) {
 	}
 }
 
+func TestStopGoServiceProcessTreeReturnsPromptly(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows process-tree termination")
+	}
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := probe.Addr().(*net.TCPAddr).Port
+	_ = probe.Close()
+
+	folder := projectTestFolder(t, "backend")
+	manager := newTestManager(t)
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := "go test -run=TestPortListenerChild ."
+	logPath := filepath.Join(folder, "logs", "backend.log")
+	config := fmt.Sprintf("projects:\n  backend:\n    cwd: %q\n    run: %q\n    port: %d\n    log: %q\n", workingDir, command, port, logPath)
+	if err := os.WriteFile(filepath.Join(folder, configFilename), []byte(config), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.LoadFolder(folder); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NALA_CTRL_TEST_LISTENER_PORT", fmt.Sprint(port))
+
+	result, err := manager.RunProject("backend")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootIdentity := processIdentity(result.PID)
+	var serviceIdentity, ownerIdentity *ProcessIdentity
+	cleanupTree := func() {
+		for _, identity := range []*ProcessIdentity{ownerIdentity, serviceIdentity, rootIdentity} {
+			if identity != nil && identity.CreateTime > 0 && processIdentityMatches(identity.PID, identity.CreateTime) {
+				_ = terminatePID(identity.PID)
+			}
+		}
+	}
+	t.Cleanup(cleanupTree)
+
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		status, err := manager.GetProjectStatus("backend")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.PortOwner != nil && status.PortOwner.CanTerminate {
+			manager.mu.RLock()
+			_, spec, exists := manager.resolveServiceLocked("backend")
+			manager.mu.RUnlock()
+			if matched, ok := findConfiguredServiceProcess(spec, status.PortOwner.PID); exists && ok {
+				serviceIdentity = matched
+				ownerCopy := *status.PortOwner
+				ownerIdentity = &ownerCopy
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if serviceIdentity == nil || ownerIdentity == nil {
+		t.Fatalf("Go test service did not bind port %d under its configured process tree", port)
+	}
+
+	stopResult := make(chan error, 1)
+	go func() { stopResult <- manager.StopProject("backend") }()
+	select {
+	case err := <-stopResult:
+		if err != nil {
+			t.Fatalf("StopProject returned an error: %v", err)
+		}
+	case <-time.After(8 * time.Second):
+		cleanupTree()
+		select {
+		case <-stopResult:
+		case <-time.After(3 * time.Second):
+		}
+		t.Fatal("StopProject did not finish within 8 seconds for a Go service process tree")
+	}
+
+	owner, err := findPortOwner(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner != nil {
+		t.Fatalf("service port %d remains owned by process %d after StopProject", port, owner.PID)
+	}
+}
+
 func TestAddedConfiguredProjectsRestoreAfterRestart(t *testing.T) {
 	registryPath := filepath.Join(t.TempDir(), "user-config", "project-folders.json")
 	firstFolder := projectTestFolder(t, "first-project")

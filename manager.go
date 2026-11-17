@@ -47,6 +47,7 @@ type managedProcess struct {
 	recovered        bool
 	startedByManager bool
 	done             chan struct{}
+	logDone          chan struct{}
 }
 
 type ProcessIdentity struct {
@@ -574,7 +575,7 @@ func (m *Manager) adoptConfiguredProcess(serviceID string, spec projectSpec, roo
 	}
 	process := &managedProcess{
 		pid: root.PID, createTime: root.CreateTime, portOwner: managedOwner,
-		recovered: true, commandExited: true, done: make(chan struct{}),
+		recovered: true, commandExited: true, done: make(chan struct{}), logDone: make(chan struct{}),
 	}
 	m.mu.Lock()
 	if m.starting[serviceID] {
@@ -593,7 +594,10 @@ func (m *Manager) adoptConfiguredProcess(serviceID string, spec projectSpec, roo
 	if info, err := os.Stat(spec.LogPath); err == nil {
 		logOffset = info.Size()
 	}
-	go m.followServiceLog(spec, logOffset, process.done)
+	go func() {
+		defer close(process.logDone)
+		m.followServiceLog(spec, logOffset, process.done)
+	}()
 	go m.monitorManagedProcess(serviceID, spec, process)
 	return process
 }
@@ -762,13 +766,19 @@ func (m *Manager) startProject(serviceID string, spec projectSpec) (RunResult, e
 	}
 	processID := int32(command.Process.Pid)
 	processInfo := processIdentity(processID)
-	process := &managedProcess{command: command, pid: processID, createTime: processInfo.CreateTime, startedByManager: true, done: make(chan struct{})}
+	process := &managedProcess{
+		command: command, pid: processID, createTime: processInfo.CreateTime,
+		startedByManager: true, done: make(chan struct{}), logDone: make(chan struct{}),
+	}
 	_ = logFile.Close()
 	m.mu.Lock()
 	m.running[serviceID] = process
 	m.mu.Unlock()
 	m.publishState(ProjectStateEvent{ProjectID: spec.ProjectID, ProjectName: spec.ProjectName, ServiceID: spec.ID, ServiceName: spec.Name, Running: true, PID: process.pid})
-	go m.followServiceLog(spec, logInfo.Size(), process.done)
+	go func() {
+		defer close(process.logDone)
+		m.followServiceLog(spec, logInfo.Size(), process.done)
+	}()
 	go m.monitorManagedProcess(serviceID, spec, process)
 	go func() {
 		_ = command.Wait()
@@ -874,6 +884,16 @@ func portStillOwnedBy(port int, expected *ProcessIdentity) bool {
 	return err == nil && owner != nil && owner.PID == expected.PID && owner.CreateTime > 0 && owner.CreateTime == expected.CreateTime
 }
 
+func waitForProcessLog(process *managedProcess) {
+	if process == nil || process.logDone == nil {
+		return
+	}
+	select {
+	case <-process.logDone:
+	case <-time.After(2 * time.Second):
+	}
+}
+
 func (m *Manager) StopProject(idOrName string) error {
 	if _, err := m.GetProjectStatus(idOrName); err != nil {
 		return err
@@ -901,6 +921,7 @@ func (m *Manager) StopProject(idOrName string) error {
 	}
 	select {
 	case <-process.done:
+		waitForProcessLog(process)
 		return nil
 	default:
 	}
@@ -919,9 +940,10 @@ func (m *Manager) StopProject(idOrName string) error {
 		if !commandActive && rootCreateTime <= 0 {
 			return fmt.Errorf("cannot safely stop configured service process %d because its start time could not be verified", rootPID)
 		}
-		if err := terminateProcessTree(rootPID); err != nil {
+		if err := terminateProcessTree(rootPID, rootCreateTime); err != nil {
 			select {
 			case <-process.done:
+				waitForProcessLog(process)
 				return nil
 			default:
 				return fmt.Errorf("stop service process %d: %w", rootPID, err)
@@ -936,6 +958,7 @@ func (m *Manager) StopProject(idOrName string) error {
 	}
 	select {
 	case <-process.done:
+		waitForProcessLog(process)
 		return nil
 	case <-time.After(6 * time.Second):
 		return fmt.Errorf("service process %d did not stop", rootPID)
