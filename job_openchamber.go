@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -21,7 +22,9 @@ import (
 const (
 	openChamberProviderID          = "opencode"
 	openChamberFreeModelID         = "deepseek-v4.1-flash-free"
+	openChamberUsageProjectName    = "Nala Ctrl Usage Monitor"
 	openChamberResponseByteLimit   = 16 * 1024
+	openChamberSettingsByteLimit   = 256 * 1024
 	openChamberAPIDiscoveryTimeout = 2 * time.Second
 	openChamberProbeTimeout        = 90 * time.Second
 )
@@ -55,21 +58,38 @@ type openChamberGenerateResponse struct {
 }
 
 type openChamberCreateSessionRequest struct {
-	Title    string              `json:"title"`
-	Model    openChamberModelRef `json:"model"`
-	Location json.RawMessage     `json:"location"`
+	Title    string                     `json:"title"`
+	Model    openChamberModelRef        `json:"model"`
+	Location openChamberSessionLocation `json:"location"`
+}
+
+type openChamberSessionLocation struct {
+	Directory string `json:"directory"`
 }
 
 type openChamberCreateSessionResponse struct {
 	Data struct {
-		ID string `json:"id"`
+		ID        string `json:"id"`
+		Directory string `json:"directory"`
 	} `json:"data"`
 }
 
-type openChamberSessionListResponse struct {
-	Data []struct {
-		Location json.RawMessage `json:"location"`
-	} `json:"data"`
+type openChamberSettingsResponse struct {
+	Projects *[]openChamberProject `json:"projects"`
+}
+
+type openChamberProject struct {
+	Path string `json:"path"`
+}
+
+type openChamberCreateProjectRequest struct {
+	Path   string `json:"path"`
+	Create bool   `json:"create"`
+}
+
+type openChamberCreateProjectResponse struct {
+	Success bool   `json:"success"`
+	Path    string `json:"path"`
 }
 
 type openChamberProviderError struct {
@@ -91,7 +111,15 @@ func runOpenChamberFreeUsageCheck(ctx context.Context) (string, string, []string
 	client := openChamberHTTPClient(openChamberProbeTimeout)
 	defer client.CloseIdleConnections()
 
-	_, err = createOpenChamberUsageSession(ctx, client, target)
+	projectDirectory, err := ensureOpenChamberUsageProject(ctx, client, target)
+	if err != nil {
+		return jobStatusFailed, "The dedicated OpenChamber project could not be prepared, so free usage could not be checked.", []string{"The Nala Ctrl Usage Monitor project was not available in OpenChamber."}
+	}
+	if !openChamberListenerStillOwned(target) {
+		return jobStatusFailed, "OpenChamber's local API changed before the free usage check could run.", []string{"The OpenChamber listener was no longer available after project setup."}
+	}
+
+	_, err = createOpenChamberUsageSession(ctx, client, target, projectDirectory)
 	if err != nil {
 		return jobStatusFailed, "OpenChamber session creation was not confirmed, so free usage could not be checked.", []string{"The OpenChamber session API did not return a usable session ID."}
 	}
@@ -127,7 +155,7 @@ func runOpenChamberFreeUsageCheck(ctx context.Context) (string, string, []string
 		if json.Unmarshal(body, &result) != nil || strings.TrimSpace(result.Data.Text) == "" {
 			return jobStatusFailed, "OpenCode Zen returned an unreadable model response.", []string{"The stateless model response did not contain text."}
 		}
-		return jobStatusHealthy, "The OpenCode Zen free model responded; free usage is available.", []string{"A new OpenChamber session was created and the one-request free model probe succeeded."}
+		return jobStatusHealthy, "The OpenCode Zen free model responded; free usage is available.", []string{"A new session was created in the Nala Ctrl Usage Monitor project, and the one-request free model probe succeeded."}
 	}
 
 	var providerError openChamberProviderError
@@ -136,30 +164,98 @@ func runOpenChamberFreeUsageCheck(ctx context.Context) (string, string, []string
 		providerError.ProviderID == openChamberProviderID {
 		message := strings.ToLower(providerError.Message)
 		if strings.Contains(message, "free usage limit reached") {
-			return jobStatusUnhealthy, "OpenCode Zen reports that the free usage limit has not reset.", []string{"A new OpenChamber session was created; the free model probe returned its free usage limit message."}
+			return jobStatusUnhealthy, "OpenCode Zen reports that the free usage limit has not reset.", []string{"A new session was created in the Nala Ctrl Usage Monitor project; the free model probe returned its free usage limit message."}
 		}
 		if providerError.Reason == "rate_limit" {
-			return jobStatusFailed, "The free model was rate limited; its usage reset could not be confirmed.", []string{"A new OpenChamber session was created; the provider rate limit did not identify the free usage reset state."}
+			return jobStatusFailed, "The free model was rate limited; its usage reset could not be confirmed.", []string{"A new session was created in the Nala Ctrl Usage Monitor project; the provider rate limit did not identify the free usage reset state."}
 		}
 	}
-	return jobStatusFailed, "OpenCode Zen's free usage state could not be confirmed.", []string{"A new OpenChamber session was created; the model probe failed for a reason other than its known free usage limit response."}
+	return jobStatusFailed, "OpenCode Zen's free usage state could not be confirmed.", []string{"A new session was created in the Nala Ctrl Usage Monitor project; the model probe failed for a reason other than its known free usage limit response."}
 }
 
-func createOpenChamberUsageSession(ctx context.Context, client *http.Client, target openChamberListener) (string, error) {
+func ensureOpenChamberUsageProject(ctx context.Context, client *http.Client, target openChamberListener) (string, error) {
+	homeDirectory, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(homeDirectory) == "" {
+		return "", errors.New("the user home directory is unavailable")
+	}
+	projectDirectory := filepath.Join(homeDirectory, "Documents", "Projects", openChamberUsageProjectName)
+	if !filepath.IsAbs(projectDirectory) {
+		return "", errors.New("the OpenChamber project directory is not absolute")
+	}
 	if !openChamberListenerStillOwned(target) {
-		return "", errors.New("OpenChamber listener changed before session creation")
+		return "", errors.New("OpenChamber listener changed before project lookup")
 	}
-	location, err := openChamberLatestSessionLocation(ctx, client, target)
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+target.address+"/api/config/settings", nil)
 	if err != nil {
-		return "", errors.New("OpenChamber did not provide a recent session location")
+		return "", errors.New("could not create the OpenChamber project lookup")
 	}
+	request.Header.Set("Accept", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return "", errors.New("OpenChamber project lookup failed")
+	}
+	body, readErr := readOpenChamberResponseLimit(response, openChamberSettingsByteLimit)
+	response.Body.Close()
+	if readErr != nil || response.StatusCode != http.StatusOK {
+		return "", errors.New("OpenChamber project lookup did not succeed")
+	}
+	var settings openChamberSettingsResponse
+	if json.Unmarshal(body, &settings) != nil || settings.Projects == nil {
+		return "", errors.New("OpenChamber project settings were unreadable")
+	}
+	for _, project := range *settings.Projects {
+		if strings.TrimSpace(project.Path) != "" && sameOpenChamberPath(project.Path, projectDirectory) {
+			return filepath.Clean(project.Path), nil
+		}
+	}
+
+	if !openChamberListenerStillOwned(target) {
+		return "", errors.New("OpenChamber listener changed before project creation")
+	}
+	payload, err := json.Marshal(openChamberCreateProjectRequest{Path: projectDirectory, Create: true})
+	if err != nil {
+		return "", errors.New("could not create the OpenChamber project request")
+	}
+	request, err = http.NewRequestWithContext(ctx, http.MethodPost, "http://"+target.address+"/api/openchamber/directory", bytes.NewReader(payload))
+	if err != nil {
+		return "", errors.New("could not create the OpenChamber project request")
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/json")
+	response, err = client.Do(request)
+	if err != nil {
+		return "", errors.New("OpenChamber project creation request failed")
+	}
+	body, readErr = readOpenChamberResponse(response)
+	response.Body.Close()
+	if readErr != nil || response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return "", errors.New("OpenChamber project creation did not succeed")
+	}
+	var created openChamberCreateProjectResponse
+	if json.Unmarshal(body, &created) != nil || !created.Success || strings.TrimSpace(created.Path) == "" || !sameOpenChamberPath(created.Path, projectDirectory) {
+		return "", errors.New("OpenChamber project creation returned no matching project directory")
+	}
+	return filepath.Clean(created.Path), nil
+}
+
+func sameOpenChamberPath(first, second string) bool {
+	first = filepath.Clean(strings.TrimSpace(first))
+	second = filepath.Clean(strings.TrimSpace(second))
+	if filepath.Separator == '\\' {
+		return strings.EqualFold(first, second)
+	}
+	return first == second
+}
+
+func createOpenChamberUsageSession(ctx context.Context, client *http.Client, target openChamberListener, projectDirectory string) (string, error) {
 	if !openChamberListenerStillOwned(target) {
 		return "", errors.New("OpenChamber listener changed before session creation")
 	}
 	payload, err := json.Marshal(openChamberCreateSessionRequest{
 		Title:    "OpenChamber free usage check " + time.Now().Format("2006-01-02 15:04:05.000"),
 		Model:    openChamberModelRef{ProviderID: openChamberProviderID, ID: openChamberFreeModelID},
-		Location: location,
+		Location: openChamberSessionLocation{Directory: projectDirectory},
 	})
 	if err != nil {
 		return "", errors.New("could not create the OpenChamber session request")
@@ -180,39 +276,10 @@ func createOpenChamberUsageSession(ctx context.Context, client *http.Client, tar
 		return "", errors.New("OpenChamber session creation did not succeed")
 	}
 	var result openChamberCreateSessionResponse
-	if json.Unmarshal(body, &result) != nil || strings.TrimSpace(result.Data.ID) == "" {
-		return "", errors.New("OpenChamber session creation returned no session ID")
+	if json.Unmarshal(body, &result) != nil || strings.TrimSpace(result.Data.ID) == "" || strings.TrimSpace(result.Data.Directory) == "" || !sameOpenChamberPath(result.Data.Directory, projectDirectory) {
+		return "", errors.New("OpenChamber session creation did not return a session in the requested project")
 	}
 	return result.Data.ID, nil
-}
-
-func openChamberLatestSessionLocation(ctx context.Context, client *http.Client, target openChamberListener) (json.RawMessage, error) {
-	if !openChamberListenerStillOwned(target) {
-		return nil, errors.New("OpenChamber listener changed before session lookup")
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+target.address+"/api/session?limit=1&order=desc", nil)
-	if err != nil {
-		return nil, errors.New("could not create the OpenChamber session lookup")
-	}
-	request.Header.Set("Accept", "application/json")
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, errors.New("OpenChamber session lookup failed")
-	}
-	defer response.Body.Close()
-	body, err := readOpenChamberResponse(response)
-	if err != nil || response.StatusCode != http.StatusOK {
-		return nil, errors.New("OpenChamber session lookup did not succeed")
-	}
-	var result openChamberSessionListResponse
-	if json.Unmarshal(body, &result) != nil || len(result.Data) == 0 {
-		return nil, errors.New("OpenChamber has no recent session")
-	}
-	location := result.Data[0].Location
-	if len(location) == 0 || !json.Valid(location) || strings.TrimSpace(string(location)) == "null" {
-		return nil, errors.New("OpenChamber's latest session has no usable location")
-	}
-	return location, nil
 }
 
 func findOpenChamberAPITarget(ctx context.Context) (openChamberListener, error) {
@@ -376,11 +443,15 @@ func openChamberHTTPClient(timeout time.Duration) *http.Client {
 }
 
 func readOpenChamberResponse(response *http.Response) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(response.Body, openChamberResponseByteLimit+1))
+	return readOpenChamberResponseLimit(response, openChamberResponseByteLimit)
+}
+
+func readOpenChamberResponseLimit(response *http.Response, limit int64) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
 		return nil, errors.New("could not read the bounded response")
 	}
-	if len(body) > openChamberResponseByteLimit {
+	if int64(len(body)) > limit {
 		return nil, errors.New("response exceeded the bounded size")
 	}
 	return body, nil
