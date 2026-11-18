@@ -16,13 +16,15 @@ import (
 )
 
 const (
-	jobStatusHealthy   = "healthy"
-	jobStatusUnhealthy = "unhealthy"
-	jobStatusFailed    = "failed"
-	jobStatusRunning   = "running"
-	jobHistoryLimit    = 50
-	jobOutputLineLimit = 200
-	jobOutputByteLimit = 24 * 1024
+	jobStatusHealthy          = "healthy"
+	jobStatusUnhealthy        = "unhealthy"
+	jobStatusFailed           = "failed"
+	jobStatusRunning          = "running"
+	jobHistoryLimit           = 50
+	jobRecentRunsLimit        = 15
+	jobOutputLineLimit        = 200
+	jobOutputByteLimit        = 24 * 1024
+	openChamberFreeUsageJobID = "openchamber-free-usage"
 )
 
 type JobSchedule struct {
@@ -72,6 +74,7 @@ var defaultJobDefinitions = []jobDefinition{
 	{id: "health-nala-svc", name: "Nala SVC health", description: "Check the loaded backend service at /healthz.", projectName: "nala-svc", schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 20}},
 	{id: "health-nala-trace", name: "Nala Trace health", description: "Check the loaded backend service at /healthz.", projectName: "nala-trace", schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 30}},
 	{id: "health-nala-grow", name: "Nala Grow health", description: "Check the loaded backend service at /healthz.", projectName: "nala-grow", schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 40}},
+	{id: openChamberFreeUsageJobID, name: "OpenChamber free usage reset", description: "Send one stateless request to check whether OpenCode Zen's DeepSeek V4.1 Flash Free model is available. This can consume one free request when the model responds.", schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 50}},
 }
 
 type JobScheduler struct {
@@ -225,8 +228,12 @@ func (s *JobScheduler) GetJobRuns(jobID string) ([]JobRun, error) {
 	if saved == nil {
 		return nil, errors.New("job was not found")
 	}
-	runs := make([]JobRun, 0, len(saved.Runs))
-	for i := len(saved.Runs) - 1; i >= 0; i-- {
+	start := len(saved.Runs) - jobRecentRunsLimit
+	if start < 0 {
+		start = 0
+	}
+	runs := make([]JobRun, 0, len(saved.Runs)-start)
+	for i := len(saved.Runs) - 1; i >= start; i-- {
 		runs = append(runs, saved.Runs[i].JobRun)
 	}
 	return runs, nil
@@ -410,7 +417,9 @@ func (s *JobScheduler) executeJob(ctx context.Context, definition jobDefinition)
 	}
 	s.mu.Unlock()
 	var output []string
-	if definition.projectName != "" {
+	if definition.id == openChamberFreeUsageJobID {
+		run.Status, run.Summary, output = runOpenChamberFreeUsageCheck(ctx)
+	} else if definition.projectName != "" {
 		run.Status, run.Summary, output = s.runProjectHealthCheck(ctx, definition.projectName)
 	} else {
 		run.Status, run.Summary, output = s.runMinikubePortForwardCheck(ctx)
