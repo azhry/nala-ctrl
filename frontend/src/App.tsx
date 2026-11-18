@@ -955,10 +955,19 @@ function ProjectScreen({
   const runningPID = details?.pid || (ownerMatchesService ? owner?.pid ?? 0 : 0);
   const portConflict = owner !== null && !ownerMatchesService;
   const portOccupied = !running && owner !== null;
+  const configuredPort = service.port ?? details?.port ?? null;
+  // The manager reports a service as running once its process tree is spawned.
+  // A wrapped run command such as `go run` may compile silently before it binds
+  // the configured port, so a spawned process without a listener is still starting.
+  const waitingForPort = Boolean(running && configuredPort && owner === null && busyAction !== 'run');
   const lines = details?.logLines ?? [];
   const isBusy = busyAction !== null || details === null;
-  const processState = !details ? 'checking' : busyAction === 'run' ? 'starting' : busyAction === 'stop' || busyAction === 'terminate' ? 'stopping' : running ? 'running' : portOccupied ? 'port-in-use' : 'stopped';
-  const processStateLabel = processState === 'checking' ? 'Checking process' : processState === 'starting' ? 'Starting process' : processState === 'stopping' ? 'Stopping process' : running ? portConflict ? 'Running · port conflict' : 'Running' : portOccupied ? 'Port in use' : 'Stopped';
+  const processState = !details ? 'checking' : busyAction === 'run' ? 'starting' : busyAction === 'stop' || busyAction === 'terminate' ? 'stopping' : waitingForPort ? 'waiting-for-port' : running ? 'running' : portOccupied ? 'port-in-use' : 'stopped';
+  const processStateLabel = processState === 'checking' ? 'Checking process' : processState === 'starting' ? 'Starting process' : processState === 'stopping' ? 'Stopping process' : processState === 'waiting-for-port' ? `Starting · waiting for port ${configuredPort}` : running ? portConflict ? 'Running · port conflict' : 'Running' : portOccupied ? 'Port in use' : 'Stopped';
+  const processDetail = !details ? 'Reading process state' : processState === 'waiting-for-port' ? runningPID > 0 ? `PID ${runningPID} · nothing listening on port ${configuredPort} yet` : `Waiting for the service to bind port ${configuredPort}` : running ? portConflict && owner ? `PID ${runningPID} · configured port held by ${owner.name} · PID ${owner.pid}` : `PID ${runningPID}` : portOccupied && owner ? `${owner.name} · PID ${owner.pid} · not matched to this service` : 'No managed process';
+  const portDetail = owner ? `${owner.name} · PID ${owner.pid}` : waitingForPort ? `Waiting for the service to bind :${configuredPort}` : configuredPort ? 'Available' : 'Port check is not configured';
+  const statusTone = waitingForPort ? ' waiting' : running || portOccupied ? ' live' : '';
+  const logFooterLabel = waitingForPort ? 'WAITING FOR OUTPUT' : running ? 'STREAM ACTIVE' : 'STREAM IDLE';
   return (
     <div className="project-screen">
       <section className="log-panel" aria-label={`${project.name} ${service.name} log stream`}>
@@ -976,7 +985,7 @@ function ProjectScreen({
             <div className="log-empty"><div className="log-empty-mark"><Icon name="terminal" /></div><strong>No output yet</strong><span>{running ? 'Waiting for the service to write its first line.' : portOccupied ? 'A process owns the configured port, but this session did not start it and cannot capture its output.' : 'Run this service to start capturing its output.'}</span></div>
           )}
         </div>
-        <div className="log-panel-foot"><span><i className={running ? 'foot-live' : ''} />{running ? 'STREAM ACTIVE' : 'STREAM IDLE'}</span><span>Live output · latest 250 lines</span></div>
+        <div className="log-panel-foot"><span><i className={waitingForPort ? 'foot-waiting' : running ? 'foot-live' : ''} />{logFooterLabel}</span><span>Live output · latest 250 lines</span></div>
       </section>
 
       <section className="project-info" aria-label="Project information">
@@ -984,12 +993,12 @@ function ProjectScreen({
           <div className="project-heading-copy">
             <p className="eyebrow">PROJECT / {project.name}</p>
             <div className="project-title-row">
-              <span className={`large-status-dot${running || portOccupied ? ' live' : details ? ' stopped' : ' checking'}`} aria-hidden="true" />
+              <span className={`large-status-dot${waitingForPort ? ' waiting' : running || portOccupied ? ' live' : details ? ' stopped' : ' checking'}`} aria-hidden="true" />
               <div className="project-title-copy">
                 <h1>{service.name}</h1>
-                <div className={`process-status${running || portOccupied ? ' live' : ''}`} role="status" aria-live="polite">
+                <div className={`process-status${statusTone}`} role="status" aria-live="polite">
                   <strong>{processStateLabel}</strong>
-                  <span>{running ? portConflict && owner ? `PID ${runningPID} · configured port held by ${owner.name} · PID ${owner.pid}` : `PID ${runningPID}` : processState === 'checking' ? 'Reading process state' : portOccupied && owner ? `${owner.name} · PID ${owner.pid} · not matched to this service` : 'No managed process'}</span>
+                  <span>{processDetail}</span>
                 </div>
               </div>
             </div>
@@ -1012,7 +1021,7 @@ function ProjectScreen({
           <div className="project-meta-item">
             <span>PORT</span>
             <strong>{service.port ? `:${service.port}` : 'Not configured'}</strong>
-            <small>{owner ? `${owner.name} · PID ${owner.pid}` : service.port ? 'Available' : 'Port check is not configured'}</small>
+            <small>{portDetail}</small>
           </div>
           <div className="project-meta-item">
             <span>WORKING DIRECTORY</span>
