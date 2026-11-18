@@ -101,18 +101,70 @@ func findConfiguredServiceProcess(spec projectSpec, descendantOf int32) (*Proces
 	if err != nil {
 		return nil, false
 	}
-	var match *ProcessIdentity
+	var matches []*ProcessIdentity
 	for _, proc := range processes {
 		pid := proc.Pid
 		if pid <= 4 || pid == int32(os.Getpid()) || !configuredServiceProcessMatches(pid, spec) {
 			continue
 		}
-		if match != nil {
+		matches = append(matches, processIdentity(pid))
+	}
+	return outermostServiceProcessMatch(matches)
+}
+
+// outermostServiceProcessMatch reduces full-inventory matches to one service
+// root. A run command can match both the shell wrapper Nala Ctrl starts and a
+// child that shell launches, as `go run .` does for `cmd.exe` and `go.exe`.
+// Those matches are one process tree, so its outermost process is the service
+// root. Matches from separate trees stay ambiguous.
+func outermostServiceProcessMatch(matches []*ProcessIdentity) (*ProcessIdentity, bool) {
+	if len(matches) == 0 {
+		return nil, false
+	}
+	outermost := matches[0]
+	for _, candidate := range matches[1:] {
+		switch {
+		case candidate.PID == outermost.PID:
+			continue
+		case processTreeContains(candidate.PID, candidate.CreateTime, outermost.PID):
+			outermost = candidate
+		case processTreeContains(outermost.PID, outermost.CreateTime, candidate.PID):
+			continue
+		default:
 			return nil, false
 		}
-		match = processIdentity(pid)
 	}
-	return match, match != nil
+	return outermost, true
+}
+
+// processTreeContains reports whether rootPID is matchPID or one of its
+// ancestors, using the same bounded parent walk as configured-process
+// matching. A known rootCreateTime must still identify that root.
+func processTreeContains(rootPID int32, rootCreateTime int64, matchPID int32) bool {
+	if rootPID <= 4 || matchPID <= 4 {
+		return false
+	}
+	visited := make(map[int32]struct{})
+	pid := matchPID
+	for depth := 0; pid > 4 && depth < 32; depth++ {
+		if _, seen := visited[pid]; seen {
+			return false
+		}
+		visited[pid] = struct{}{}
+		if pid == rootPID {
+			return rootCreateTime <= 0 || processIdentityMatches(rootPID, rootCreateTime)
+		}
+		proc, err := process.NewProcess(pid)
+		if err != nil {
+			return false
+		}
+		parentPID, err := proc.Ppid()
+		if err != nil || parentPID <= 4 || parentPID == pid {
+			return false
+		}
+		pid = parentPID
+	}
+	return false
 }
 
 func configuredServiceProcessMatches(pid int32, spec projectSpec) bool {

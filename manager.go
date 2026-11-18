@@ -521,8 +521,8 @@ func (m *Manager) GetProjectStatus(idOrName string) (*ServiceRuntimeStatus, erro
 	if owner != nil {
 		root, matched = findConfiguredServiceProcess(spec, owner.PID)
 		ownerMatched = matched
-		if matched && root != nil && status.Running && managed != nil && root.PID == managed.pid &&
-			root.CreateTime == managed.createTime {
+		if matched && root != nil && status.Running && managed != nil &&
+			managedTreeOwnsMatch(managed.pid, managed.createTime, root) {
 			m.setManagedPortOwner(id, managed, owner)
 			status.PID = owner.PID
 		}
@@ -818,7 +818,7 @@ func (m *Manager) monitorManagedProcess(serviceID string, spec projectSpec, mana
 				if err == nil && currentOwner != nil {
 					root, matches := findConfiguredServiceProcess(spec, currentOwner.PID)
 					rootMatches := currentOwner.PID == rootPID
-					if matches && root != nil && root.PID == rootPID && (rootCreateTime == 0 || root.CreateTime == rootCreateTime) {
+					if matches && root != nil && managedTreeOwnsMatch(rootPID, rootCreateTime, root) {
 						rootMatches = true
 					}
 					if rootMatches {
@@ -843,6 +843,20 @@ func (m *Manager) monitorManagedProcess(serviceID string, spec projectSpec, mana
 		m.finishManagedProcess(serviceID, spec, managed)
 		return
 	}
+}
+
+// managedTreeOwnsMatch reports whether a configured-process match resolved from
+// a listening port belongs to the managed service. The manager tracks the shell
+// it started, while a wrapped run command such as `go run` matches a child of
+// that shell; both are the same service tree.
+func managedTreeOwnsMatch(rootPID int32, rootCreateTime int64, match *ProcessIdentity) bool {
+	if match == nil {
+		return false
+	}
+	if match.PID == rootPID {
+		return rootCreateTime <= 0 || match.CreateTime == rootCreateTime
+	}
+	return processTreeContains(rootPID, rootCreateTime, match.PID)
 }
 
 func (m *Manager) setManagedPortOwner(serviceID string, managed *managedProcess, owner *ProcessIdentity) {

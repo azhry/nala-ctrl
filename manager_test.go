@@ -171,6 +171,122 @@ func TestStopGoServiceProcessTreeReturnsPromptly(t *testing.T) {
 	}
 }
 
+func TestConfiguredPortOwnerLinksToWrappedServiceProcess(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows shell-wrapped process tree")
+	}
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := probe.Addr().(*net.TCPAddr).Port
+	_ = probe.Close()
+
+	moduleDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(moduleDir, "go.mod"), []byte("module portownerrepro\n\ngo 1.21\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	listenerSource := `package main
+
+import (
+	"fmt"
+	"net"
+	"os"
+	"time"
+)
+
+func main() {
+	port := os.Getenv("NALA_CTRL_TEST_LISTENER_PORT")
+	listener, err := net.Listen("tcp", "127.0.0.1:"+port)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	defer listener.Close()
+	for {
+		time.Sleep(time.Hour)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(moduleDir, "main.go"), []byte(listenerSource), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	folder := projectTestFolder(t, "backend")
+	manager := newTestManager(t)
+	// `go run .` starts a shell, the go tool, and the built program. Both the
+	// shell and the go tool match the configured command, and the port belongs
+	// to their child.
+	logPath := filepath.Join(folder, "logs", "backend.log")
+	config := fmt.Sprintf("projects:\n  backend:\n    cwd: %q\n    run: %q\n    port: %d\n    log: %q\n", moduleDir, "go run .", port, logPath)
+	if err := os.WriteFile(filepath.Join(folder, configFilename), []byte(config), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.LoadFolder(folder); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NALA_CTRL_TEST_LISTENER_PORT", fmt.Sprint(port))
+
+	result, err := manager.RunProject("backend")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootIdentity := processIdentity(result.PID)
+	t.Cleanup(func() {
+		_ = manager.StopAll()
+		if rootIdentity.CreateTime > 0 && processIdentityMatches(rootIdentity.PID, rootIdentity.CreateTime) {
+			_ = terminatePID(rootIdentity.PID)
+		}
+	})
+
+	var details *ProjectDetails
+	var lastDetails *ProjectDetails
+	var lastListener, lastRoot *ProcessIdentity
+	var lastRootFound bool
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		current, err := manager.GetProjectDetails("backend")
+		if err != nil {
+			t.Fatal(err)
+		}
+		lastDetails = current
+		if listener, err := findPortOwner(port); err == nil && listener != nil {
+			lastListener = listener
+			manager.mu.RLock()
+			_, spec, _ := manager.resolveServiceLocked("backend")
+			manager.mu.RUnlock()
+			lastRoot, lastRootFound = findConfiguredServiceProcess(spec, listener.PID)
+		}
+		if current.PortOwner != nil && current.PortOwner.ManagedServiceID == current.ServiceID {
+			details = current
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if details == nil {
+		lines, _, _ := readLogTail(logPath)
+		tail := ""
+		if len(lines) > 0 {
+			tail = lines[len(lines)-1]
+		}
+		t.Fatalf("configured port %d was not attributed to the service process tree: service=%+v listener=%+v matchedRoot=%+v found=%v lastLog=%q", port, lastDetails, lastListener, lastRoot, lastRootFound, tail)
+	}
+	if details.PID != details.PortOwner.PID {
+		t.Fatalf("service PID = %d, want the port owner %d", details.PID, details.PortOwner.PID)
+	}
+
+	manager.mu.RLock()
+	_, spec, exists := manager.resolveServiceLocked("backend")
+	manager.mu.RUnlock()
+	if !exists {
+		t.Fatal("backend service is not loaded")
+	}
+	scan, found := findConfiguredServiceProcess(spec, 0)
+	if !found || scan.PID != result.PID {
+		t.Fatalf("inventory match = %#v (found %v), want the started shell %d", scan, found, result.PID)
+	}
+}
+
 func TestAddedConfiguredProjectsRestoreAfterRestart(t *testing.T) {
 	registryPath := filepath.Join(t.TempDir(), "user-config", "project-folders.json")
 	firstFolder := projectTestFolder(t, "first-project")
