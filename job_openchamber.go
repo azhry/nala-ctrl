@@ -54,6 +54,24 @@ type openChamberGenerateResponse struct {
 	} `json:"data"`
 }
 
+type openChamberCreateSessionRequest struct {
+	Title    string              `json:"title"`
+	Model    openChamberModelRef `json:"model"`
+	Location json.RawMessage     `json:"location"`
+}
+
+type openChamberCreateSessionResponse struct {
+	Data struct {
+		ID string `json:"id"`
+	} `json:"data"`
+}
+
+type openChamberSessionListResponse struct {
+	Data []struct {
+		Location json.RawMessage `json:"location"`
+	} `json:"data"`
+}
+
 type openChamberProviderError struct {
 	Tag        string `json:"_tag"`
 	ProviderID string `json:"providerID"`
@@ -70,12 +88,23 @@ func runOpenChamberFreeUsageCheck(ctx context.Context) (string, string, []string
 		return jobStatusFailed, "OpenChamber's local API changed before the free usage check could run.", []string{"The verified OpenChamber listener was no longer available."}
 	}
 
+	client := openChamberHTTPClient(openChamberProbeTimeout)
+	defer client.CloseIdleConnections()
+
+	_, err = createOpenChamberUsageSession(ctx, client, target)
+	if err != nil {
+		return jobStatusFailed, "OpenChamber session creation was not confirmed, so free usage could not be checked.", []string{"The OpenChamber session API did not return a usable session ID."}
+	}
+	if !openChamberListenerStillOwned(target) {
+		return jobStatusFailed, "OpenChamber's local API changed before the free usage check could run.", []string{"A new OpenChamber session was created, but the verified listener was no longer available for its probe."}
+	}
+
 	payload, err := json.Marshal(openChamberGenerateRequest{
 		Prompt: "Reply only with OK.",
 		Model:  openChamberModelRef{ProviderID: openChamberProviderID, ID: openChamberFreeModelID},
 	})
 	if err != nil {
-		return jobStatusFailed, "The OpenCode Zen free usage check could not be prepared.", []string{"Could not create the stateless model probe."}
+		return jobStatusFailed, "The OpenCode Zen free usage check could not be prepared.", []string{"Could not create the stateless model request."}
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+target.address+"/api/experimental/generate/text", bytes.NewReader(payload))
 	if err != nil {
@@ -83,9 +112,6 @@ func runOpenChamberFreeUsageCheck(ctx context.Context) (string, string, []string
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Content-Type", "application/json")
-
-	client := openChamberHTTPClient(openChamberProbeTimeout)
-	defer client.CloseIdleConnections()
 	response, err := client.Do(request)
 	if err != nil {
 		return jobStatusFailed, "OpenCode Zen's free usage state could not be confirmed.", []string{"The stateless model request could not connect or timed out."}
@@ -101,7 +127,7 @@ func runOpenChamberFreeUsageCheck(ctx context.Context) (string, string, []string
 		if json.Unmarshal(body, &result) != nil || strings.TrimSpace(result.Data.Text) == "" {
 			return jobStatusFailed, "OpenCode Zen returned an unreadable model response.", []string{"The stateless model response did not contain text."}
 		}
-		return jobStatusHealthy, "The OpenCode Zen free model responded; free usage is available.", []string{"The one-request free model probe succeeded."}
+		return jobStatusHealthy, "The OpenCode Zen free model responded; free usage is available.", []string{"A new OpenChamber session was created and the one-request free model probe succeeded."}
 	}
 
 	var providerError openChamberProviderError
@@ -110,13 +136,83 @@ func runOpenChamberFreeUsageCheck(ctx context.Context) (string, string, []string
 		providerError.ProviderID == openChamberProviderID {
 		message := strings.ToLower(providerError.Message)
 		if strings.Contains(message, "free usage limit reached") {
-			return jobStatusUnhealthy, "OpenCode Zen reports that the free usage limit has not reset.", []string{"The selected free model returned its free usage limit message."}
+			return jobStatusUnhealthy, "OpenCode Zen reports that the free usage limit has not reset.", []string{"A new OpenChamber session was created; the free model probe returned its free usage limit message."}
 		}
 		if providerError.Reason == "rate_limit" {
-			return jobStatusFailed, "The free model was rate limited; its usage reset could not be confirmed.", []string{"The provider returned a rate limit without its free usage limit message."}
+			return jobStatusFailed, "The free model was rate limited; its usage reset could not be confirmed.", []string{"A new OpenChamber session was created; the provider rate limit did not identify the free usage reset state."}
 		}
 	}
-	return jobStatusFailed, "OpenCode Zen's free usage state could not be confirmed.", []string{"The stateless model probe failed for a reason other than its known free usage limit response."}
+	return jobStatusFailed, "OpenCode Zen's free usage state could not be confirmed.", []string{"A new OpenChamber session was created; the model probe failed for a reason other than its known free usage limit response."}
+}
+
+func createOpenChamberUsageSession(ctx context.Context, client *http.Client, target openChamberListener) (string, error) {
+	if !openChamberListenerStillOwned(target) {
+		return "", errors.New("OpenChamber listener changed before session creation")
+	}
+	location, err := openChamberLatestSessionLocation(ctx, client, target)
+	if err != nil {
+		return "", errors.New("OpenChamber did not provide a recent session location")
+	}
+	if !openChamberListenerStillOwned(target) {
+		return "", errors.New("OpenChamber listener changed before session creation")
+	}
+	payload, err := json.Marshal(openChamberCreateSessionRequest{
+		Title:    "OpenChamber free usage check " + time.Now().Format("2006-01-02 15:04:05.000"),
+		Model:    openChamberModelRef{ProviderID: openChamberProviderID, ID: openChamberFreeModelID},
+		Location: location,
+	})
+	if err != nil {
+		return "", errors.New("could not create the OpenChamber session request")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+target.address+"/api/session", bytes.NewReader(payload))
+	if err != nil {
+		return "", errors.New("could not create the OpenChamber session request")
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return "", errors.New("OpenChamber session creation request failed")
+	}
+	defer response.Body.Close()
+	body, err := readOpenChamberResponse(response)
+	if err != nil || response.StatusCode != http.StatusOK {
+		return "", errors.New("OpenChamber session creation did not succeed")
+	}
+	var result openChamberCreateSessionResponse
+	if json.Unmarshal(body, &result) != nil || strings.TrimSpace(result.Data.ID) == "" {
+		return "", errors.New("OpenChamber session creation returned no session ID")
+	}
+	return result.Data.ID, nil
+}
+
+func openChamberLatestSessionLocation(ctx context.Context, client *http.Client, target openChamberListener) (json.RawMessage, error) {
+	if !openChamberListenerStillOwned(target) {
+		return nil, errors.New("OpenChamber listener changed before session lookup")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+target.address+"/api/session?limit=1&order=desc", nil)
+	if err != nil {
+		return nil, errors.New("could not create the OpenChamber session lookup")
+	}
+	request.Header.Set("Accept", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, errors.New("OpenChamber session lookup failed")
+	}
+	defer response.Body.Close()
+	body, err := readOpenChamberResponse(response)
+	if err != nil || response.StatusCode != http.StatusOK {
+		return nil, errors.New("OpenChamber session lookup did not succeed")
+	}
+	var result openChamberSessionListResponse
+	if json.Unmarshal(body, &result) != nil || len(result.Data) == 0 {
+		return nil, errors.New("OpenChamber has no recent session")
+	}
+	location := result.Data[0].Location
+	if len(location) == 0 || !json.Valid(location) || strings.TrimSpace(string(location)) == "null" {
+		return nil, errors.New("OpenChamber's latest session has no usable location")
+	}
+	return location, nil
 }
 
 func findOpenChamberAPITarget(ctx context.Context) (openChamberListener, error) {
