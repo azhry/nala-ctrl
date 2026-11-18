@@ -62,21 +62,13 @@ type openChamberSessionMessagesResponse struct {
 }
 
 type openChamberSessionMessage struct {
-	Info struct {
-		Role   string          `json:"role"`
-		Type   string          `json:"type"`
-		Finish string          `json:"finish"`
-		Error  json.RawMessage `json:"error"`
-		Model  struct {
-			ProviderID string `json:"providerID"`
-			ID         string `json:"id"`
-			ModelID    string `json:"modelID"`
-		} `json:"model"`
-	} `json:"info"`
-	Parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"parts"`
+	Type   string          `json:"type"`
+	Finish string          `json:"finish"`
+	Error  json.RawMessage `json:"error"`
+	Model  struct {
+		ProviderID string `json:"providerID"`
+		ID         string `json:"id"`
+	} `json:"model"`
 	Content []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
@@ -97,7 +89,7 @@ type openChamberSessionLocation struct {
 type openChamberCreateSessionResponse struct {
 	Data struct {
 		ID          string                      `json:"id"`
-		Directory   string                      `json:"directory"`
+		Location    openChamberSessionLocation  `json:"location"`
 		Permissions []openChamberPermissionRule `json:"permissions"`
 	} `json:"data"`
 }
@@ -242,31 +234,19 @@ func readOpenChamberUsageMessages(ctx context.Context, client *http.Client, targ
 func inspectOpenChamberUsageMessages(messages []openChamberSessionMessage) string {
 	for index := len(messages) - 1; index >= 0; index-- {
 		message := messages[index]
-		if !strings.EqualFold(message.Info.Role, "assistant") && !strings.EqualFold(message.Info.Type, "assistant") {
+		if !strings.EqualFold(message.Type, "assistant") {
 			continue
 		}
-		modelID := message.Info.Model.ID
-		if modelID == "" {
-			modelID = message.Info.Model.ModelID
-		}
-		if message.Info.Model.ProviderID != openChamberProviderID || modelID != openChamberFreeModelID {
+		if message.Model.ProviderID != openChamberProviderID || message.Model.ID != openChamberFreeModelID {
 			return "failed"
 		}
-		if openChamberFreeUsageLimitError(message.Info.Error) {
+		if openChamberFreeUsageLimitError(message.Error) {
 			return "limited"
 		}
-		if hasOpenChamberMessageError(message.Info.Error) || strings.EqualFold(message.Info.Finish, "error") {
+		if hasOpenChamberMessageError(message.Error) || strings.EqualFold(message.Finish, "error") {
 			return "failed"
 		}
 		textFound := false
-		for _, part := range message.Parts {
-			if isOpenChamberToolPart(part.Type) {
-				return "failed"
-			}
-			if strings.EqualFold(part.Type, "text") && strings.TrimSpace(part.Text) != "" {
-				textFound = true
-			}
-		}
 		for _, part := range message.Content {
 			if isOpenChamberToolPart(part.Type) {
 				return "failed"
@@ -407,7 +387,7 @@ func createOpenChamberUsageSession(ctx context.Context, client *http.Client, tar
 		return "", errors.New("OpenChamber session creation did not succeed")
 	}
 	var result openChamberCreateSessionResponse
-	if json.Unmarshal(body, &result) != nil || strings.TrimSpace(result.Data.ID) == "" || strings.TrimSpace(result.Data.Directory) == "" || !sameOpenChamberPath(result.Data.Directory, projectDirectory) || !hasOpenChamberDenyAllPermission(result.Data.Permissions) {
+	if json.Unmarshal(body, &result) != nil || strings.TrimSpace(result.Data.ID) == "" || strings.TrimSpace(result.Data.Location.Directory) == "" || !sameOpenChamberPath(result.Data.Location.Directory, projectDirectory) || !hasOpenChamberDenyAllPermission(result.Data.Permissions) {
 		return "", errors.New("OpenChamber session creation did not return the requested project and tool restrictions")
 	}
 	return result.Data.ID, nil
