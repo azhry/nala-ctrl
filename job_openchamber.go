@@ -21,15 +21,19 @@ import (
 )
 
 const (
-	openChamberProviderID          = "opencode"
-	openChamberFreeModelID         = "deepseek-v4.1-flash-free"
-	openChamberUsageProjectName    = "Nala Ctrl Usage Monitor"
-	openChamberResponseByteLimit   = 16 * 1024
-	openChamberSettingsByteLimit   = 256 * 1024
-	openChamberAPIDiscoveryTimeout = 2 * time.Second
-	openChamberProbeTimeout        = 90 * time.Second
-	openChamberFreeLimitRetryDelay = 30 * time.Second
+	openChamberProviderID           = "opencode"
+	openChamberFreeModelID          = "deepseek-v4.1-flash-free"
+	openChamberUsageProjectName     = "Nala Ctrl Usage Monitor"
+	openChamberResponseByteLimit    = 16 * 1024
+	openChamberSettingsByteLimit    = 256 * 1024
+	openChamberAPIDiscoveryTimeout  = 2 * time.Second
+	openChamberProbeTimeout         = 90 * time.Second
+	openChamberFreeLimitRetryDelay  = 30 * time.Second
+	openChamberFreeModelIdleTimeout = 3 * time.Minute
+	openChamberActivePollInterval   = 5 * time.Second
 )
+
+var errOpenChamberFreeModelBusy = errors.New("OpenChamber free model remained active")
 
 type openChamberListener struct {
 	pid        int32
@@ -60,6 +64,20 @@ type openChamberPromptRequest struct {
 
 type openChamberSessionMessagesResponse struct {
 	Data []openChamberSessionMessage `json:"data"`
+}
+
+type openChamberActiveSessionsResponse struct {
+	Data map[string]openChamberActiveSessionStatus `json:"data"`
+}
+
+type openChamberActiveSessionStatus struct {
+	Type string `json:"type"`
+}
+
+type openChamberSessionModelResponse struct {
+	Data struct {
+		Model openChamberModelRef `json:"model"`
+	} `json:"data"`
 }
 
 type openChamberSessionMessage struct {
@@ -162,6 +180,12 @@ func runOpenChamberFreeUsageCheck(ctx context.Context) (string, string, []string
 		if err := waitForOpenChamberFreeLimitRetry(ctx); err != nil {
 			return jobStatusFailed, "OpenCode Zen's free usage state could not be confirmed.", []string{"The delayed retry was canceled before it could check the reset."}
 		}
+		if err := waitForOpenChamberFreeModelIdle(ctx, client, target); err != nil {
+			if errors.Is(err, errOpenChamberFreeModelBusy) {
+				return jobStatusFailed, "OpenCode Zen's free usage state is unknown because another session kept the free model busy.", []string{"No delayed retry was sent because another session using the same free model remained active for three minutes."}
+			}
+			return jobStatusFailed, "OpenCode Zen's free usage state could not be confirmed.", []string{"The OpenChamber active-session state could not be checked before the delayed retry."}
+		}
 		if err := sendOpenChamberUsagePrompt(ctx, client, target, sessionID); err != nil {
 			return jobStatusFailed, "OpenCode Zen's free usage state could not be confirmed.", []string{"The delayed retry prompt was not accepted by OpenChamber."}
 		}
@@ -201,6 +225,94 @@ func waitForOpenChamberFreeLimitRetry(ctx context.Context) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+func waitForOpenChamberFreeModelIdle(ctx context.Context, client *http.Client, target openChamberListener) error {
+	timer := time.NewTimer(openChamberFreeModelIdleTimeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(openChamberActivePollInterval)
+	defer ticker.Stop()
+
+	for {
+		active, err := openChamberFreeModelSessionActive(ctx, client, target)
+		if err != nil {
+			return err
+		}
+		if !active {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return errOpenChamberFreeModelBusy
+		case <-ticker.C:
+		}
+	}
+}
+
+func openChamberFreeModelSessionActive(ctx context.Context, client *http.Client, target openChamberListener) (bool, error) {
+	if !openChamberListenerStillOwned(target) {
+		return false, errors.New("OpenChamber listener changed before checking active sessions")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+target.address+"/api/session/active", nil)
+	if err != nil {
+		return false, errors.New("could not create the OpenChamber active-session request")
+	}
+	request.Header.Set("Accept", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return false, errors.New("OpenChamber active-session request failed")
+	}
+	body, err := readOpenChamberResponse(response)
+	response.Body.Close()
+	if err != nil || response.StatusCode != http.StatusOK {
+		return false, errors.New("OpenChamber active-session response was unavailable")
+	}
+	var active openChamberActiveSessionsResponse
+	if json.Unmarshal(body, &active) != nil || active.Data == nil {
+		return false, errors.New("OpenChamber active-session response was unreadable")
+	}
+
+	for sessionID, status := range active.Data {
+		if strings.TrimSpace(status.Type) == "" || strings.EqualFold(status.Type, "idle") {
+			continue
+		}
+		model, err := readOpenChamberSessionModel(ctx, client, target, sessionID)
+		if err != nil {
+			return false, err
+		}
+		if model.ProviderID == openChamberProviderID && model.ID == openChamberFreeModelID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func readOpenChamberSessionModel(ctx context.Context, client *http.Client, target openChamberListener, sessionID string) (openChamberModelRef, error) {
+	if !openChamberListenerStillOwned(target) {
+		return openChamberModelRef{}, errors.New("OpenChamber listener changed before reading an active session")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+target.address+"/api/session/"+url.PathEscape(sessionID), nil)
+	if err != nil {
+		return openChamberModelRef{}, errors.New("could not create the active-session detail request")
+	}
+	request.Header.Set("Accept", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return openChamberModelRef{}, errors.New("active-session detail request failed")
+	}
+	body, err := readOpenChamberResponse(response)
+	response.Body.Close()
+	if err != nil || response.StatusCode != http.StatusOK {
+		return openChamberModelRef{}, errors.New("active-session details were unavailable")
+	}
+	var session openChamberSessionModelResponse
+	if json.Unmarshal(body, &session) != nil || strings.TrimSpace(session.Data.Model.ProviderID) == "" || strings.TrimSpace(session.Data.Model.ID) == "" {
+		return openChamberModelRef{}, errors.New("active-session model details were unreadable")
+	}
+	return session.Data.Model, nil
 }
 
 func sendOpenChamberUsagePrompt(ctx context.Context, client *http.Client, target openChamberListener, sessionID string) error {
