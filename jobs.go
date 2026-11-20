@@ -74,7 +74,7 @@ var defaultJobDefinitions = []jobDefinition{
 	{id: "health-nala-svc", name: "Nala SVC health", description: "Check the loaded backend service at /healthz.", projectName: "nala-svc", schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 20}},
 	{id: "health-nala-trace", name: "Nala Trace health", description: "Check the loaded backend service at /healthz.", projectName: "nala-trace", schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 30}},
 	{id: "health-nala-grow", name: "Nala Grow health", description: "Check the loaded backend service at /healthz.", projectName: "nala-grow", schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 40}},
-	{id: openChamberFreeUsageJobID, name: "OpenChamber free usage reset", description: "Create a visible session in the dedicated Nala Ctrl Usage Monitor project, then send one probe prompt in that session to check whether OpenCode Zen's DeepSeek V4.1 Flash Free model is available. This can consume one free request when the model responds.", schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 50}},
+	{id: openChamberFreeUsageJobID, name: "OpenChamber free usage reset", description: "Create a scheduled session in the dedicated Nala Ctrl Usage Monitor project and probe OpenCode Zen's DeepSeek V4.1 Flash Free model. After an explicit free-limit response, retry once after 30 seconds in the same session. A successful probe can consume one free request.", schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 50}},
 }
 
 type JobScheduler struct {
