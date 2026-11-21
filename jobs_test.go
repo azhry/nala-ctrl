@@ -40,7 +40,7 @@ func TestNextJobRunAtUsesLocalOffsetAndInterval(t *testing.T) {
 	}
 }
 
-func TestJobSchedulerSeedsFiveStaggeredJobs(t *testing.T) {
+func TestJobSchedulerSeedsSixStaggeredJobs(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "jobs.json")
 	scheduler := newJobScheduler(nil, path, nil)
 	now := time.Date(2026, time.November, 15, 10, 5, 0, 0, time.Local)
@@ -54,8 +54,8 @@ func TestJobSchedulerSeedsFiveStaggeredJobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(jobs) != 5 {
-		t.Fatalf("seeded %d jobs, want 5", len(jobs))
+	if len(jobs) != 6 {
+		t.Fatalf("seeded %d jobs, want 6", len(jobs))
 	}
 	ids := make([]string, len(jobs))
 	offsets := make([]int, len(jobs))
@@ -66,10 +66,10 @@ func TestJobSchedulerSeedsFiveStaggeredJobs(t *testing.T) {
 			t.Errorf("job %q interval = %d, want 60", job.ID, job.Schedule.IntervalMinutes)
 		}
 	}
-	if !reflect.DeepEqual(ids, []string{"minikube-port-forwards", "health-nala-labs", "health-nala-svc", "health-nala-trace", "health-nala-grow"}) {
+	if !reflect.DeepEqual(ids, []string{"minikube-port-forwards", "health-nala-labs", "health-nala-svc", "health-nala-trace", "health-nala-grow", openChamberFreeUsageJobID}) {
 		t.Fatalf("seeded job IDs = %v", ids)
 	}
-	if !reflect.DeepEqual(offsets, []int{0, 10, 20, 30, 40}) {
+	if !reflect.DeepEqual(offsets, []int{0, 10, 20, 30, 40, 50}) {
 		t.Fatalf("seeded offsets = %v", offsets)
 	}
 }
