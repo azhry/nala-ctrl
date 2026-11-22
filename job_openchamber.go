@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -689,13 +691,17 @@ func createOpenChamberUsageSession(ctx context.Context, client *http.Client, tar
 	if !openChamberListenerStillOwned(target) {
 		return "", errors.New("OpenChamber listener changed before session creation")
 	}
+	permissions, readResource, err := openChamberUsageProbePermissions()
+	if err != nil {
+		return "", err
+	}
 	payload, err := json.Marshal(openChamberCreateSessionRequest{
 		Title:       "OpenChamber free usage check " + time.Now().Format("2006-01-02 15:04:05.000"),
 		Agent:       openChamberAgentID,
 		Model:       openChamberModelRef{ProviderID: openChamberProviderID, ID: openChamberFreeModelID, Variant: openChamberFreeModelVariant},
 		Location:    openChamberSessionLocation{Directory: projectDirectory},
 		Metadata:    openChamberSessionMetadata{OpenChamber: openChamberSessionMetadataDetails{Kind: "scheduled"}},
-		Permissions: []openChamberPermissionRule{{Action: "*", Resource: "*", Effect: "deny"}},
+		Permissions: permissions,
 	})
 	if err != nil {
 		return "", errors.New("could not create the OpenChamber session request")
@@ -717,10 +723,41 @@ func createOpenChamberUsageSession(ctx context.Context, client *http.Client, tar
 		return "", errors.New("OpenChamber session creation did not succeed")
 	}
 	var result openChamberCreateSessionResponse
-	if json.Unmarshal(body, &result) != nil || strings.TrimSpace(result.Data.ID) == "" || result.Data.Agent != openChamberAgentID || result.Data.Model.ProviderID != openChamberProviderID || result.Data.Model.ID != openChamberFreeModelID || result.Data.Model.Variant != openChamberFreeModelVariant || strings.TrimSpace(result.Data.Location.Directory) == "" || !sameOpenChamberPath(result.Data.Location.Directory, projectDirectory) || result.Data.Metadata.OpenChamber.Kind != "scheduled" || !hasOpenChamberDenyAllPermission(result.Data.Permissions) {
+	if json.Unmarshal(body, &result) != nil || strings.TrimSpace(result.Data.ID) == "" || result.Data.Agent != openChamberAgentID || result.Data.Model.ProviderID != openChamberProviderID || result.Data.Model.ID != openChamberFreeModelID || result.Data.Model.Variant != openChamberFreeModelVariant || strings.TrimSpace(result.Data.Location.Directory) == "" || !sameOpenChamberPath(result.Data.Location.Directory, projectDirectory) || result.Data.Metadata.OpenChamber.Kind != "scheduled" || !hasOpenChamberUsageProbePermissions(result.Data.Permissions, readResource) {
 		return "", errors.New("OpenChamber session creation did not return the requested project, model, agent, scheduled classification, and tool restrictions")
 	}
 	return result.Data.ID, nil
+}
+
+func openChamberUsageProbePermissions() ([]openChamberPermissionRule, string, error) {
+	// OpenCode Zen rejects free-tier requests if the read tool is removed. Keep
+	// that tool in the request while allowing it only under a unique nonexistent
+	// temporary directory; the blanket rule still denies every real project path.
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, "", errors.New("could not create the OpenChamber probe read restriction")
+	}
+	blockedDirectory := filepath.Join(os.TempDir(), "nala-ctrl-openchamber-no-read-"+hex.EncodeToString(nonce))
+	if _, err := os.Lstat(blockedDirectory); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return nil, "", errors.New("the OpenChamber probe read restriction path is not unavailable")
+	}
+	readResource := filepath.Join(blockedDirectory, "*")
+	return []openChamberPermissionRule{
+		{Action: "*", Resource: "*", Effect: "deny"},
+		{Action: "read", Resource: readResource, Effect: "allow"},
+	}, readResource, nil
+}
+
+func hasOpenChamberUsageProbePermissions(rules []openChamberPermissionRule, readResource string) bool {
+	if !hasOpenChamberDenyAllPermission(rules) {
+		return false
+	}
+	for _, rule := range rules {
+		if rule.Action == "read" && rule.Resource == readResource && rule.Effect == "allow" {
+			return true
+		}
+	}
+	return false
 }
 
 func hasOpenChamberDenyAllPermission(rules []openChamberPermissionRule) bool {
