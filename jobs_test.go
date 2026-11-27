@@ -66,7 +66,7 @@ func TestJobSchedulerSeedsSixStaggeredJobs(t *testing.T) {
 			t.Errorf("job %q interval = %d, want 60", job.ID, job.Schedule.IntervalMinutes)
 		}
 	}
-	if !reflect.DeepEqual(ids, []string{"minikube-port-forwards", "health-nala-labs", "health-nala-svc", "health-nala-trace", "health-nala-grow", openChamberFreeUsageJobID}) {
+	if !reflect.DeepEqual(ids, []string{"minikube-port-forwards", "health-nala-labs", "health-nala-svc", "health-nala-trace", "health-nala-grow", "openchamber-free-usage"}) {
 		t.Fatalf("seeded job IDs = %v", ids)
 	}
 	if !reflect.DeepEqual(offsets, []int{0, 10, 20, 30, 40, 50}) {

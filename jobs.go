@@ -16,15 +16,20 @@ import (
 )
 
 const (
-	jobStatusHealthy          = "healthy"
-	jobStatusUnhealthy        = "unhealthy"
-	jobStatusFailed           = "failed"
-	jobStatusRunning          = "running"
-	jobHistoryLimit           = 50
-	jobRecentRunsLimit        = 15
-	jobOutputLineLimit        = 200
-	jobOutputByteLimit        = 24 * 1024
-	openChamberFreeUsageJobID = "openchamber-free-usage"
+	jobStatusHealthy           = "healthy"
+	jobStatusUnhealthy         = "unhealthy"
+	jobStatusFailed            = "failed"
+	jobStatusRunning           = "running"
+	jobHistoryLimit            = 50
+	jobRecentRunsLimit         = 15
+	jobOutputLineLimit         = 200
+	jobOutputByteLimit         = 24 * 1024
+	jobKindMinikubePortForward = "minikube-port-forwards"
+	jobKindProjectHealth       = "project-health"
+	jobKindOpenChamberUsage    = "openchamber-free-usage"
+	jobNameLimit               = 80
+	jobDescriptionLimit        = 1000
+	jobProjectNameLimit        = 120
 )
 
 type JobSchedule struct {
@@ -36,9 +41,21 @@ type Job struct {
 	ID          string      `json:"id"`
 	Name        string      `json:"name"`
 	Description string      `json:"description"`
+	Kind        string      `json:"kind"`
+	ProjectName string      `json:"projectName,omitempty"`
+	Enabled     bool        `json:"enabled"`
 	Schedule    JobSchedule `json:"schedule"`
 	NextRunAt   time.Time   `json:"nextRunAt"`
 	LastRun     *JobRun     `json:"lastRun,omitempty"`
+}
+
+type JobDefinitionInput struct {
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	Kind        string      `json:"kind"`
+	ProjectName string      `json:"projectName"`
+	Enabled     bool        `json:"enabled"`
+	Schedule    JobSchedule `json:"schedule"`
 }
 
 type JobRun struct {
@@ -50,17 +67,18 @@ type JobRun struct {
 	Summary    string     `json:"summary"`
 }
 
-type jobDefinition struct {
+type starterJobDefinition struct {
 	id          string
 	name        string
 	description string
+	kind        string
 	projectName string
 	schedule    JobSchedule
 }
 
 type manualJobRequest struct {
-	definition jobDefinition
-	result     chan manualJobResult
+	jobID  string
+	result chan manualJobResult
 }
 
 type manualJobResult struct {
@@ -68,13 +86,13 @@ type manualJobResult struct {
 	err error
 }
 
-var defaultJobDefinitions = []jobDefinition{
-	{id: "minikube-port-forwards", name: "Minikube port forwards", description: "Check and safely recover discovered kubectl port-forwards.", schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 0}},
-	{id: "health-nala-labs", name: "Nala Labs health", description: "Check the loaded backend service at /healthz.", projectName: "nala-labs", schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 10}},
-	{id: "health-nala-svc", name: "Nala SVC health", description: "Check the loaded backend service at /healthz.", projectName: "nala-svc", schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 20}},
-	{id: "health-nala-trace", name: "Nala Trace health", description: "Check the loaded backend service at /healthz.", projectName: "nala-trace", schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 30}},
-	{id: "health-nala-grow", name: "Nala Grow health", description: "Check the loaded backend service at /healthz.", projectName: "nala-grow", schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 40}},
-	{id: openChamberFreeUsageJobID, name: "OpenChamber free usage reset", description: "Create a scheduled session in the dedicated Nala Ctrl Usage Monitor project using the project-scoped build agent and the default variant of OpenCode Zen's DeepSeek V4.1 Flash Free model. After an explicit free-limit response, watch active sessions using the same model while waiting 30 seconds before retrying, then allow up to three minutes for them to finish. A completed response in another session confirms availability; a successful probe can consume one free request.", schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 50}},
+var starterJobDefinitions = []starterJobDefinition{
+	{id: "minikube-port-forwards", name: "Minikube port forwards", description: "Check and safely recover discovered kubectl port-forwards.", kind: jobKindMinikubePortForward, schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 0}},
+	{id: "health-nala-labs", name: "Nala Labs health", description: "Check the loaded backend service at /healthz.", kind: jobKindProjectHealth, projectName: "nala-labs", schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 10}},
+	{id: "health-nala-svc", name: "Nala SVC health", description: "Check the loaded backend service at /healthz.", kind: jobKindProjectHealth, projectName: "nala-svc", schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 20}},
+	{id: "health-nala-trace", name: "Nala Trace health", description: "Check the loaded backend service at /healthz.", kind: jobKindProjectHealth, projectName: "nala-trace", schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 30}},
+	{id: "health-nala-grow", name: "Nala Grow health", description: "Check the loaded backend service at /healthz.", kind: jobKindProjectHealth, projectName: "nala-grow", schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 40}},
+	{id: "openchamber-free-usage", name: "OpenChamber free usage reset", description: "Create a scheduled session in the dedicated Nala Ctrl Usage Monitor project using the project-scoped build agent and the default variant of OpenCode Zen's DeepSeek V4.1 Flash Free model. After an explicit free-limit response, watch active sessions using the same model while waiting 30 seconds before retrying, then allow up to three minutes for them to finish. A completed response in another session confirms availability; a successful probe can consume one free request.", kind: jobKindOpenChamberUsage, schedule: JobSchedule{IntervalMinutes: 60, OffsetMinutes: 50}},
 }
 
 type JobScheduler struct {
@@ -164,29 +182,33 @@ func (s *JobScheduler) GetJobs() ([]Job, error) {
 	}
 	jobs := make([]Job, 0, len(s.state.Jobs))
 	for _, saved := range s.state.Jobs {
-		job := Job{
-			ID: saved.ID, Name: saved.Name, Description: saved.Description,
-			Schedule: saved.Schedule, NextRunAt: saved.NextRunAt,
-		}
-		if len(saved.Runs) > 0 {
-			last := saved.Runs[len(saved.Runs)-1].JobRun
-			job.LastRun = &last
-		}
-		jobs = append(jobs, job)
+		jobs = append(jobs, jobFromStored(saved))
 	}
 	return jobs, nil
 }
 
-func (s *JobScheduler) RunJobNow(jobID string) (JobRun, error) {
-	definition, exists := definitionForID(jobID)
-	if !exists {
-		return JobRun{}, errors.New("job was not found")
+func jobFromStored(saved storedJob) Job {
+	job := Job{
+		ID: saved.ID, Name: saved.Name, Description: saved.Description,
+		Kind: saved.Kind, ProjectName: saved.ProjectName, Enabled: saved.Enabled,
+		Schedule: saved.Schedule, NextRunAt: saved.NextRunAt,
 	}
+	if len(saved.Runs) > 0 {
+		last := saved.Runs[len(saved.Runs)-1].JobRun
+		job.LastRun = &last
+	}
+	return job
+}
 
+func (s *JobScheduler) RunJobNow(jobID string) (JobRun, error) {
 	s.mu.Lock()
 	if s.loadErr != nil {
 		s.mu.Unlock()
 		return JobRun{}, errors.New("saved jobs could not be run")
+	}
+	if s.findJobLocked(jobID) == nil {
+		s.mu.Unlock()
+		return JobRun{}, errors.New("job was not found")
 	}
 	if s.cancel == nil || s.ctx == nil || s.ctx.Err() != nil {
 		s.mu.Unlock()
@@ -200,7 +222,7 @@ func (s *JobScheduler) RunJobNow(jobID string) (JobRun, error) {
 	ctx := s.ctx
 	s.mu.Unlock()
 
-	request := manualJobRequest{definition: definition, result: make(chan manualJobResult, 1)}
+	request := manualJobRequest{jobID: jobID, result: make(chan manualJobResult, 1)}
 	select {
 	case s.manualRequests <- request:
 	case <-ctx.Done():
@@ -257,8 +279,40 @@ func (s *JobScheduler) GetJobRunLog(jobID, runID string) ([]string, error) {
 	return nil, errors.New("job run was not found")
 }
 
-func (s *JobScheduler) UpdateJobSchedule(jobID string, schedule JobSchedule) (Job, error) {
-	if err := validateJobSchedule(schedule); err != nil {
+func (s *JobScheduler) CreateJob(input JobDefinitionInput) (Job, error) {
+	normalized, err := normalizeJobDefinition(input)
+	if err != nil {
+		return Job{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return Job{}, errors.New("saved jobs could not be updated")
+	}
+	if err := jobDefinitionConflict(s.state.Jobs, normalized.Name, normalized.Kind, normalized.ProjectName, ""); err != nil {
+		return Job{}, err
+	}
+	jobID := newJobID()
+	for s.findJobLocked(jobID) != nil {
+		jobID = newJobID()
+	}
+	saved := storedJob{
+		ID: jobID, Kind: normalized.Kind, Name: normalized.Name, Description: normalized.Description,
+		ProjectName: normalized.ProjectName, Enabled: normalized.Enabled, Schedule: normalized.Schedule,
+		NextRunAt: nextJobRunAt(normalized.Schedule, time.Now()), Runs: []storedJobRun{},
+	}
+	previous := s.state.Jobs
+	s.state.Jobs = append(append([]storedJob{}, previous...), saved)
+	if err := writeJobsFile(s.path, s.state); err != nil {
+		s.state.Jobs = previous
+		return Job{}, errors.New("the job could not be saved")
+	}
+	return jobFromStored(saved), nil
+}
+
+func (s *JobScheduler) UpdateJob(jobID string, input JobDefinitionInput) (Job, error) {
+	normalized, err := normalizeJobDefinition(input)
+	if err != nil {
 		return Job{}, err
 	}
 	s.mu.Lock()
@@ -270,21 +324,127 @@ func (s *JobScheduler) UpdateJobSchedule(jobID string, schedule JobSchedule) (Jo
 	if saved == nil {
 		return Job{}, errors.New("job was not found")
 	}
-	previousSchedule := saved.Schedule
-	previousNextRun := saved.NextRunAt
-	saved.Schedule = schedule
-	saved.NextRunAt = nextJobRunAt(schedule, time.Now())
+	if saved.Kind != normalized.Kind {
+		return Job{}, errors.New("a job's type cannot be changed; delete it and create a new job instead")
+	}
+	if err := jobDefinitionConflict(s.state.Jobs, normalized.Name, normalized.Kind, normalized.ProjectName, jobID); err != nil {
+		return Job{}, err
+	}
+	previous := *saved
+	saved.Name = normalized.Name
+	saved.Description = normalized.Description
+	saved.ProjectName = normalized.ProjectName
+	saved.Enabled = normalized.Enabled
+	if previous.Schedule != normalized.Schedule || (!previous.Enabled && normalized.Enabled) || saved.NextRunAt.IsZero() {
+		saved.NextRunAt = nextJobRunAt(normalized.Schedule, time.Now())
+	}
+	saved.Schedule = normalized.Schedule
 	if err := writeJobsFile(s.path, s.state); err != nil {
-		saved.Schedule = previousSchedule
-		saved.NextRunAt = previousNextRun
-		return Job{}, errors.New("the job schedule could not be saved")
+		*saved = previous
+		return Job{}, errors.New("the job could not be saved")
 	}
-	job := Job{ID: saved.ID, Name: saved.Name, Description: saved.Description, Schedule: saved.Schedule, NextRunAt: saved.NextRunAt}
-	if len(saved.Runs) > 0 {
-		last := saved.Runs[len(saved.Runs)-1].JobRun
-		job.LastRun = &last
+	return jobFromStored(*saved), nil
+}
+
+func (s *JobScheduler) DeleteJob(jobID string) error {
+	if !s.runMu.TryLock() {
+		return errors.New("a job is running; wait for the current run to finish before deleting it")
 	}
-	return job, nil
+	defer s.runMu.Unlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return errors.New("saved jobs could not be updated")
+	}
+	index := -1
+	for i := range s.state.Jobs {
+		if s.state.Jobs[i].ID == jobID {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return errors.New("job was not found")
+	}
+	if s.manualRunPending[jobID] {
+		return errors.New("this job has a manual run pending; wait for it to finish before deleting it")
+	}
+	for _, run := range s.state.Jobs[index].Runs {
+		if run.Status == jobStatusRunning {
+			return errors.New("this job is running; wait for the run to finish before deleting it")
+		}
+	}
+	previous := s.state.Jobs
+	s.state.Jobs = append(append([]storedJob{}, previous[:index]...), previous[index+1:]...)
+	if err := writeJobsFile(s.path, s.state); err != nil {
+		s.state.Jobs = previous
+		return errors.New("the job could not be deleted")
+	}
+	return nil
+}
+
+func normalizeJobDefinition(input JobDefinitionInput) (JobDefinitionInput, error) {
+	normalized := JobDefinitionInput{Enabled: input.Enabled, Schedule: input.Schedule}
+	normalized.Name = strings.TrimSpace(input.Name)
+	if normalized.Name == "" {
+		return JobDefinitionInput{}, errors.New("a job name is required")
+	}
+	if utf8.RuneCountInString(normalized.Name) > jobNameLimit {
+		return JobDefinitionInput{}, fmt.Errorf("keep the job name to %d characters or fewer", jobNameLimit)
+	}
+	normalized.Description = strings.TrimSpace(input.Description)
+	if utf8.RuneCountInString(normalized.Description) > jobDescriptionLimit {
+		return JobDefinitionInput{}, fmt.Errorf("keep the job description to %d characters or fewer", jobDescriptionLimit)
+	}
+	normalized.Kind = strings.TrimSpace(input.Kind)
+	switch normalized.Kind {
+	case jobKindMinikubePortForward, jobKindOpenChamberUsage:
+	case jobKindProjectHealth:
+		normalized.ProjectName = strings.TrimSpace(input.ProjectName)
+		if normalized.ProjectName == "" {
+			return JobDefinitionInput{}, errors.New("a project name is required for a health check job")
+		}
+		if utf8.RuneCountInString(normalized.ProjectName) > jobProjectNameLimit {
+			return JobDefinitionInput{}, fmt.Errorf("keep the project name to %d characters or fewer", jobProjectNameLimit)
+		}
+	default:
+		return JobDefinitionInput{}, errors.New("the job type is not supported")
+	}
+	if err := validateJobSchedule(normalized.Schedule); err != nil {
+		return JobDefinitionInput{}, err
+	}
+	return normalized, nil
+}
+
+func jobDefinitionConflict(jobs []storedJob, name, kind, projectName, excludeID string) error {
+	for _, job := range jobs {
+		if job.ID == excludeID || job.Kind != kind {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(job.Name), strings.TrimSpace(name)) {
+			return fmt.Errorf("a job named %q already exists for this type", name)
+		}
+		switch kind {
+		case jobKindMinikubePortForward:
+			return errors.New("a Minikube port forwards job already exists")
+		case jobKindOpenChamberUsage:
+			return errors.New("an OpenChamber free usage job already exists")
+		case jobKindProjectHealth:
+			if strings.EqualFold(job.ProjectName, projectName) {
+				return fmt.Errorf("a health check job for %q already exists", projectName)
+			}
+		}
+	}
+	return nil
+}
+
+func newJobID() string {
+	var value [8]byte
+	if _, err := rand.Read(value[:]); err == nil {
+		return "job-" + hex.EncodeToString(value[:])
+	}
+	return fmt.Sprintf("job-%d", time.Now().UnixNano())
 }
 
 func validateJobSchedule(schedule JobSchedule) error {
@@ -335,14 +495,14 @@ func (s *JobScheduler) loop(ctx context.Context, done chan struct{}) {
 			s.runDue(ctx, now)
 		case request := <-s.manualRequests:
 			if ctx.Err() != nil {
-				s.clearManualRunPending(request.definition.id)
+				s.clearManualRunPending(request.jobID)
 				request.result <- manualJobResult{err: errors.New("job scheduler stopped before the manual run could start")}
 				return
 			}
 			s.runMu.Lock()
-			run, err := s.executeJob(ctx, request.definition)
+			run, err := s.executeJob(ctx, request.jobID)
 			s.runMu.Unlock()
-			s.clearManualRunPending(request.definition.id)
+			s.clearManualRunPending(request.jobID)
 			request.result <- manualJobResult{run: run, err: err}
 		}
 	}
@@ -351,7 +511,7 @@ func (s *JobScheduler) loop(ctx context.Context, done chan struct{}) {
 func (s *JobScheduler) runDue(ctx context.Context, now time.Time) {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
-	var due []jobDefinition
+	var due []string
 	s.mu.Lock()
 	if s.loadErr != nil {
 		s.mu.Unlock()
@@ -364,14 +524,12 @@ func (s *JobScheduler) runDue(ctx context.Context, now time.Time) {
 		if job.NextRunAt.IsZero() || job.NextRunAt.After(now) {
 			continue
 		}
-		definition, ok := definitionForID(job.ID)
-		if !ok {
-			continue
-		}
 		previousNextRuns[job.ID] = job.NextRunAt
 		job.NextRunAt = advanceJobRunAt(job.Schedule, job.NextRunAt, now)
-		due = append(due, definition)
 		changed = true
+		if job.Enabled {
+			due = append(due, job.ID)
+		}
 	}
 	if changed {
 		if err := writeJobsFile(s.path, s.state); err != nil {
@@ -386,24 +544,25 @@ func (s *JobScheduler) runDue(ctx context.Context, now time.Time) {
 		}
 	}
 	s.mu.Unlock()
-	sortJobDefinitions(due)
-	for _, definition := range due {
+	for _, jobID := range due {
 		if ctx.Err() != nil {
 			return
 		}
-		_, _ = s.executeJob(ctx, definition)
+		_, _ = s.executeJob(ctx, jobID)
 	}
 }
 
-func (s *JobScheduler) executeJob(ctx context.Context, definition jobDefinition) (JobRun, error) {
+func (s *JobScheduler) executeJob(ctx context.Context, jobID string) (JobRun, error) {
 	started := time.Now()
-	run := storedJobRun{JobRun: JobRun{ID: newJobRunID(), JobID: definition.id, StartedAt: started, Status: jobStatusRunning, Summary: "The check is running."}}
+	run := storedJobRun{JobRun: JobRun{ID: newJobRunID(), JobID: jobID, StartedAt: started, Status: jobStatusRunning, Summary: "The check is running."}}
 	s.mu.Lock()
-	saved := s.findJobLocked(definition.id)
+	saved := s.findJobLocked(jobID)
 	if saved == nil {
 		s.mu.Unlock()
 		return JobRun{}, errors.New("job was not found")
 	}
+	kind := saved.Kind
+	projectName := saved.ProjectName
 	previousRuns := saved.Runs
 	saved.Runs = append(saved.Runs, run)
 	if len(saved.Runs) > jobHistoryLimit {
@@ -417,19 +576,24 @@ func (s *JobScheduler) executeJob(ctx context.Context, definition jobDefinition)
 	}
 	s.mu.Unlock()
 	var output []string
-	if definition.id == openChamberFreeUsageJobID {
+	switch kind {
+	case jobKindOpenChamberUsage:
 		run.Status, run.Summary, output = runOpenChamberFreeUsageCheck(ctx)
-	} else if definition.projectName != "" {
-		run.Status, run.Summary, output = s.runProjectHealthCheck(ctx, definition.projectName)
-	} else {
+	case jobKindProjectHealth:
+		run.Status, run.Summary, output = s.runProjectHealthCheck(ctx, projectName)
+	case jobKindMinikubePortForward:
 		run.Status, run.Summary, output = s.runMinikubePortForwardCheck(ctx)
+	default:
+		run.Status = jobStatusFailed
+		run.Summary = "The job type is not supported."
+		output = []string{"The saved job type is not supported by this version of Nala Ctrl."}
 	}
 	finished := time.Now()
 	run.FinishedAt = &finished
 	run.Output = boundJobOutput(output)
 	s.mu.Lock()
 	var saveErr error
-	if saved := s.findJobLocked(definition.id); saved != nil {
+	if saved := s.findJobLocked(jobID); saved != nil {
 		for i := range saved.Runs {
 			if saved.Runs[i].ID == run.ID {
 				saved.Runs[i] = run
@@ -508,23 +672,13 @@ func (s *JobScheduler) findJobLocked(id string) *storedJob {
 	return nil
 }
 
-func definitionForID(id string) (jobDefinition, bool) {
-	for _, definition := range defaultJobDefinitions {
+func starterJobForID(id string) (starterJobDefinition, bool) {
+	for _, definition := range starterJobDefinitions {
 		if definition.id == id {
 			return definition, true
 		}
 	}
-	return jobDefinition{}, false
-}
-
-func sortJobDefinitions(definitions []jobDefinition) {
-	for i := 0; i < len(definitions); i++ {
-		for j := i + 1; j < len(definitions); j++ {
-			if definitions[j].schedule.OffsetMinutes < definitions[i].schedule.OffsetMinutes {
-				definitions[i], definitions[j] = definitions[j], definitions[i]
-			}
-		}
-	}
+	return starterJobDefinition{}, false
 }
 
 func newJobRunID() string {

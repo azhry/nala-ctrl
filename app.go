@@ -206,6 +206,14 @@ func (p *ProjectManager) GetJobRunLog(jobID, runID string) ([]string, error) {
 	return p.jobs.GetJobRunLog(jobID, runID)
 }
 
-func (p *ProjectManager) UpdateJobSchedule(jobID string, schedule JobSchedule) (Job, error) {
-	return p.jobs.UpdateJobSchedule(jobID, schedule)
+func (p *ProjectManager) CreateJob(input JobDefinitionInput) (Job, error) {
+	return p.jobs.CreateJob(input)
+}
+
+func (p *ProjectManager) UpdateJob(jobID string, input JobDefinitionInput) (Job, error) {
+	return p.jobs.UpdateJob(jobID, input)
+}
+
+func (p *ProjectManager) DeleteJob(jobID string) error {
+	return p.jobs.DeleteJob(jobID)
 }

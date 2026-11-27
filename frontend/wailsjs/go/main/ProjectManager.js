@@ -10,6 +10,14 @@ export function CreateConfig(arg1) {
   return window['go']['main']['ProjectManager']['CreateConfig'](arg1);
 }
 
+export function CreateJob(arg1) {
+  return window['go']['main']['ProjectManager']['CreateJob'](arg1);
+}
+
+export function DeleteJob(arg1) {
+  return window['go']['main']['ProjectManager']['DeleteJob'](arg1);
+}
+
 export function FixDocker() {
   return window['go']['main']['ProjectManager']['FixDocker']();
 }
@@ -82,6 +90,6 @@ export function TerminatePortOwnerAndRun(arg1, arg2, arg3) {
   return window['go']['main']['ProjectManager']['TerminatePortOwnerAndRun'](arg1, arg2, arg3);
 }
 
-export function UpdateJobSchedule(arg1, arg2) {
-  return window['go']['main']['ProjectManager']['UpdateJobSchedule'](arg1, arg2);
+export function UpdateJob(arg1, arg2) {
+  return window['go']['main']['ProjectManager']['UpdateJob'](arg1, arg2);
 }

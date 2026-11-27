@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import { GetJobs, GetJobRunLog, GetJobRuns, RunJobNow, UpdateJobSchedule } from '../wailsjs/go/main/ProjectManager';
+import { CreateJob, DeleteJob, GetJobs, GetJobRunLog, GetJobRuns, RunJobNow, UpdateJob } from '../wailsjs/go/main/ProjectManager';
+import { main as wailsMain } from '../wailsjs/go/models';
 import { Icon } from './icons';
-import type { Job, JobRun, JobRunStatus, JobSchedule } from './types';
+import type { Job, JobDefinitionInput, JobKind, JobRun, JobRunStatus, JobSchedule } from './types';
 import './JobsView.css';
 
 const jobsRefreshInterval = 15_000;
@@ -33,10 +34,77 @@ function formatInterval(schedule: JobSchedule): string {
 }
 
 type JobRunBinding = Omit<JobRun, 'status'> & { status: string };
-type JobBinding = Omit<Job, 'lastRun'> & { lastRun?: JobRunBinding };
+type JobBinding = Omit<Job, 'kind' | 'lastRun'> & { kind: string; lastRun?: JobRunBinding };
 type ManualRunMessage = { kind: 'status' | 'error'; text: string };
+type JobEditorMode = 'create' | 'edit' | null;
+type JobDraft = Omit<JobDefinitionInput, 'schedule'> & {
+  intervalMinutes: string;
+  offsetMinutes: string;
+};
+
+const jobKindOptions: ReadonlyArray<{ value: JobKind; label: string; help: string }> = [
+  { value: 'project-health', label: 'Project health check', help: 'Checks the configured backend for a loaded project.' },
+  { value: 'minikube-port-forwards', label: 'Minikube port forwards', help: 'Checks and safely recovers supported local port forwards.' },
+  { value: 'openchamber-free-usage', label: 'OpenChamber free usage', help: 'Checks free usage with a project-scoped scheduled session.' },
+];
+
+function emptyJobDraft(): JobDraft {
+  return {
+    name: '',
+    description: '',
+    kind: 'project-health',
+    projectName: '',
+    enabled: true,
+    intervalMinutes: '60',
+    offsetMinutes: '0',
+  };
+}
+
+function draftFromJob(job: Job): JobDraft {
+  return {
+    name: job.name,
+    description: job.description,
+    kind: job.kind,
+    projectName: job.projectName ?? '',
+    enabled: job.enabled,
+    intervalMinutes: String(job.schedule.intervalMinutes),
+    offsetMinutes: String(job.schedule.offsetMinutes),
+  };
+}
+
+function jobKindLabel(kind: JobKind): string {
+  return jobKindOptions.find((option) => option.value === kind)?.label ?? kind;
+}
+
+function definitionFromDraft(draft: JobDraft): JobDefinitionInput {
+  const name = draft.name.trim();
+  const description = draft.description.trim();
+  const projectName = draft.kind === 'project-health' ? draft.projectName.trim() : '';
+  const intervalMinutes = Number(draft.intervalMinutes);
+  const offsetMinutes = Number(draft.offsetMinutes);
+  if (!name) throw new Error('A job name is required.');
+  if ([...name].length > 80) throw new Error('Keep the job name to 80 characters or fewer.');
+  if ([...description].length > 1000) throw new Error('Keep the job description to 1000 characters or fewer.');
+  if (draft.kind === 'project-health' && !projectName) throw new Error('A project name is required for a health check job.');
+  if ([...projectName].length > 120) throw new Error('Keep the project name to 120 characters or fewer.');
+  if (!Number.isInteger(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 1440) {
+    throw new Error('Enter an interval from 1 to 1440 whole minutes.');
+  }
+  if (!Number.isInteger(offsetMinutes) || offsetMinutes < 0 || offsetMinutes >= intervalMinutes) {
+    throw new Error('Offset must be a whole number from zero to one less than the interval.');
+  }
+  return {
+    name,
+    description,
+    kind: draft.kind,
+    projectName,
+    enabled: draft.enabled,
+    schedule: { intervalMinutes, offsetMinutes },
+  };
+}
 
 const supportedRunStatuses = new Set<string>(['running', 'healthy', 'unhealthy', 'failed']);
+const supportedJobKinds = new Set<string>(jobKindOptions.map((option) => option.value));
 
 function normalizeRun(run: JobRunBinding): JobRun {
   if (!supportedRunStatuses.has(run.status)) throw new Error(`Unsupported job run status: ${run.status}`);
@@ -44,7 +112,8 @@ function normalizeRun(run: JobRunBinding): JobRun {
 }
 
 function normalizeJob(job: JobBinding): Job {
-  return { ...job, lastRun: job.lastRun ? normalizeRun(job.lastRun) : undefined };
+  if (!supportedJobKinds.has(job.kind)) throw new Error(`Unsupported job type: ${job.kind}`);
+  return { ...job, kind: job.kind as JobKind, lastRun: job.lastRun ? normalizeRun(job.lastRun) : undefined };
 }
 
 const runStatusLabel: Record<JobRun['status'], string> = {
@@ -53,6 +122,158 @@ const runStatusLabel: Record<JobRun['status'], string> = {
   unhealthy: 'Unhealthy',
   failed: 'Failed',
 };
+
+type JobEditorFormProps = {
+  mode: Exclude<JobEditorMode, null>;
+  draft: JobDraft;
+  saving: boolean;
+  error: string;
+  onDraftChange: (patch: Partial<JobDraft>) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onCancel: () => void;
+};
+
+function JobEditorForm({ mode, draft, saving, error, onDraftChange, onSubmit, onCancel }: JobEditorFormProps) {
+  const idPrefix = `job-${mode}-form`;
+  const kindHelpID = `${idPrefix}-kind-help`;
+  const scheduleHintID = `${idPrefix}-schedule-hint`;
+  const isCreate = mode === 'create';
+
+  return (
+    <form id={idPrefix} className="jobs-definition-form" onSubmit={onSubmit} aria-labelledby={`${idPrefix}-title`} aria-busy={saving}>
+      <div className="jobs-editor-heading">
+        <div>
+          <p className="eyebrow">{isCreate ? 'NEW DEFINITION' : 'EDIT DEFINITION'}</p>
+          <h3 id={`${idPrefix}-title`}>{isCreate ? 'Create a scheduled job' : 'Edit job details'}</h3>
+        </div>
+      </div>
+
+      <div className="jobs-definition-fields">
+        <label className="jobs-editor-field" htmlFor={`${idPrefix}-name`}>
+          <span>Job name</span>
+          <input
+            id={`${idPrefix}-name`}
+            type="text"
+            maxLength={80}
+            required
+            value={draft.name}
+            onChange={(event) => onDraftChange({ name: event.target.value })}
+            disabled={saving}
+          />
+        </label>
+        <label className="jobs-editor-field jobs-editor-description" htmlFor={`${idPrefix}-description`}>
+          <span>Description <small>(optional)</small></span>
+          <textarea
+            id={`${idPrefix}-description`}
+            rows={2}
+            maxLength={1000}
+            value={draft.description}
+            onChange={(event) => onDraftChange({ description: event.target.value })}
+            disabled={saving}
+          />
+        </label>
+      </div>
+
+      {isCreate ? (
+        <label className="jobs-editor-field" htmlFor={`${idPrefix}-kind`}>
+          <span>Job type</span>
+          <select
+            id={`${idPrefix}-kind`}
+            value={draft.kind}
+            onChange={(event) => {
+              const kind = event.target.value as JobKind;
+              onDraftChange({ kind, projectName: kind === 'project-health' ? draft.projectName : '' });
+            }}
+            aria-describedby={kindHelpID}
+            disabled={saving}
+          >
+            {jobKindOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+          <small id={kindHelpID}>{jobKindOptions.find((option) => option.value === draft.kind)?.help}</small>
+        </label>
+      ) : (
+        <div className="jobs-editor-kind" aria-describedby={kindHelpID}>
+          <span>Job type</span>
+          <strong>{jobKindLabel(draft.kind)}</strong>
+          <small id={kindHelpID}>Job type stays fixed after creation.</small>
+        </div>
+      )}
+
+      {draft.kind === 'project-health' && (
+        <label className="jobs-editor-field" htmlFor={`${idPrefix}-project`}>
+          <span>Project name</span>
+          <input
+            id={`${idPrefix}-project`}
+            type="text"
+            maxLength={120}
+            required
+            value={draft.projectName}
+            onChange={(event) => onDraftChange({ projectName: event.target.value })}
+            aria-describedby={`${idPrefix}-project-help`}
+            disabled={saving}
+          />
+          <small id={`${idPrefix}-project-help`}>The check resolves a loaded project with this name when it runs.</small>
+        </label>
+      )}
+
+      <div className="jobs-schedule-fields">
+        <label htmlFor={`${idPrefix}-interval`}>
+          Interval <span>(minutes)</span>
+          <input
+            id={`${idPrefix}-interval`}
+            type="number"
+            min="1"
+            max="1440"
+            step="1"
+            required
+            value={draft.intervalMinutes}
+            onChange={(event) => onDraftChange({ intervalMinutes: event.target.value })}
+            aria-describedby={scheduleHintID}
+            disabled={saving}
+          />
+        </label>
+        <label htmlFor={`${idPrefix}-offset`}>
+          Offset <span>(minutes)</span>
+          <input
+            id={`${idPrefix}-offset`}
+            type="number"
+            min="0"
+            max={Math.max(0, (Number(draft.intervalMinutes) || 1) - 1)}
+            step="1"
+            required
+            value={draft.offsetMinutes}
+            onChange={(event) => onDraftChange({ offsetMinutes: event.target.value })}
+            aria-describedby={scheduleHintID}
+            disabled={saving}
+          />
+        </label>
+      </div>
+      <p id={scheduleHintID} className="jobs-form-hint">Use 1–1440 whole minutes; offset must be less than the interval.</p>
+
+      <label className="jobs-enabled-toggle" htmlFor={`${idPrefix}-enabled`}>
+        <input
+          id={`${idPrefix}-enabled`}
+          type="checkbox"
+          checked={draft.enabled}
+          onChange={(event) => onDraftChange({ enabled: event.target.checked })}
+          disabled={saving}
+        />
+        <span>
+          <strong>Enabled</strong>
+          <small>Paused jobs stay in the list and can still be run manually.</small>
+        </span>
+      </label>
+
+      {error && <p className="jobs-inline-error" role="alert" aria-live="assertive">{error}</p>}
+      <div className="jobs-form-actions">
+        <button type="button" className="secondary-button" onClick={onCancel} disabled={saving}>Cancel</button>
+        <button type="submit" className="primary-button jobs-save-button" disabled={saving}>
+          {saving ? (isCreate ? 'Creating…' : 'Saving…') : (isCreate ? 'Create job' : 'Save job')}
+        </button>
+      </div>
+    </form>
+  );
+}
 
 export function JobsView() {
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -79,11 +300,13 @@ export function JobsView() {
   const logRequestRef = useRef(0);
   const loadedLogKeyRef = useRef('');
 
-  const [editingSchedule, setEditingSchedule] = useState(false);
-  const [scheduleDraft, setScheduleDraft] = useState({ intervalMinutes: '', offsetMinutes: '' });
-  const [scheduleSaving, setScheduleSaving] = useState(false);
-  const [scheduleError, setScheduleError] = useState('');
-  const [scheduleNotice, setScheduleNotice] = useState('');
+  const [jobEditorMode, setJobEditorMode] = useState<JobEditorMode>(null);
+  const [jobDraft, setJobDraft] = useState<JobDraft>(emptyJobDraft);
+  const [jobMutationBusy, setJobMutationBusy] = useState(false);
+  const [jobEditorError, setJobEditorError] = useState('');
+  const [jobNotice, setJobNotice] = useState('');
+  const [pendingDeleteJobId, setPendingDeleteJobId] = useState('');
+  const [jobActionError, setJobActionError] = useState('');
   const [pendingManualRunIds, setPendingManualRunIds] = useState<Set<string>>(() => new Set());
   const pendingManualRunIdsRef = useRef(new Set<string>());
   const [manualRunMessages, setManualRunMessages] = useState<Record<string, ManualRunMessage>>({});
@@ -119,9 +342,11 @@ export function JobsView() {
         setLogError('');
         setLogLoading(false);
         loadedLogKeyRef.current = '';
-        setEditingSchedule(false);
-        setScheduleError('');
-        setScheduleNotice('');
+        setJobEditorMode(null);
+        setJobEditorError('');
+        setJobNotice('');
+        setPendingDeleteJobId('');
+        setJobActionError('');
       }
       setJobsRevision((revision) => revision + 1);
     } catch (caught) {
@@ -223,7 +448,7 @@ export function JobsView() {
   }, [selectedJobId, selectedRunId, runsRevision, logRetryRevision]);
 
   const selectJob = (jobID: string) => {
-    if (jobID === selectedJobId || scheduleSaving) return;
+    if (jobID === selectedJobId || jobMutationBusy) return;
     selectedJobIdRef.current = jobID;
     setSelectedJobId(jobID);
     selectedRunIdRef.current = '';
@@ -235,9 +460,11 @@ export function JobsView() {
     setLogError('');
     setLogLoading(false);
     loadedLogKeyRef.current = '';
-    setEditingSchedule(false);
-    setScheduleError('');
-    setScheduleNotice('');
+    setJobEditorMode(null);
+    setJobEditorError('');
+    setJobNotice('');
+    setPendingDeleteJobId('');
+    setJobActionError('');
   };
 
   const selectRun = (runID: string) => {
@@ -250,51 +477,144 @@ export function JobsView() {
     loadedLogKeyRef.current = '';
   };
 
-  const startScheduleEdit = () => {
-    if (!selectedJob) return;
-    setScheduleDraft({
-      intervalMinutes: String(selectedJob.schedule.intervalMinutes),
-      offsetMinutes: String(selectedJob.schedule.offsetMinutes),
-    });
-    setScheduleError('');
-    setScheduleNotice('');
-    setEditingSchedule(true);
+  const openCreateJob = () => {
+    setJobDraft(emptyJobDraft());
+    setJobEditorMode('create');
+    setJobEditorError('');
+    setJobNotice('');
+    setJobActionError('');
+    setPendingDeleteJobId('');
   };
 
-  const saveSchedule = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const openEditJob = () => {
     if (!selectedJob) return;
-    const intervalMinutes = Number(scheduleDraft.intervalMinutes);
-    const offsetMinutes = Number(scheduleDraft.offsetMinutes);
-    if (!Number.isInteger(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 1440) {
-      setScheduleError('Enter an interval from 1 to 1440 whole minutes.');
-      return;
-    }
-    if (!Number.isInteger(offsetMinutes) || offsetMinutes < 0 || offsetMinutes >= intervalMinutes) {
-      setScheduleError('Offset must be a whole number from zero to one less than the interval.');
+    setJobDraft(draftFromJob(selectedJob));
+    setJobEditorMode('edit');
+    setJobEditorError('');
+    setJobNotice('');
+    setJobActionError('');
+    setPendingDeleteJobId('');
+  };
+
+  const cancelJobEditor = () => {
+    setJobEditorMode(null);
+    setJobEditorError('');
+  };
+
+  const saveJob = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!jobEditorMode || jobMutationBusy || (jobEditorMode === 'edit' && !selectedJob)) return;
+
+    let input: JobDefinitionInput;
+    try {
+      input = definitionFromDraft(jobDraft);
+    } catch (caught) {
+      setJobEditorError(caught instanceof Error ? caught.message : String(caught));
       return;
     }
 
-    const jobID = selectedJob.id;
-    setScheduleSaving(true);
-    setScheduleError('');
-    setScheduleNotice('');
+    const editorMode = jobEditorMode;
+    const jobID = selectedJob?.id;
+    setJobMutationBusy(true);
+    setJobEditorError('');
+    setJobNotice('');
+    setJobActionError('');
     try {
-      const updated = normalizeJob(await UpdateJobSchedule(jobID, { intervalMinutes, offsetMinutes }));
+      if (editorMode === 'create') {
+        const created = normalizeJob(await CreateJob(new wailsMain.JobDefinitionInput(input)));
+        jobsRequestRef.current += 1;
+        setJobsLoading(false);
+        setJobsRefreshing(false);
+        setJobs((current) => [...current.filter((job) => job.id !== created.id), created].sort(compareNextRun));
+        setJobsError('');
+        selectedJobIdRef.current = created.id;
+        setSelectedJobId(created.id);
+        selectedRunIdRef.current = '';
+        setSelectedRunId('');
+        setRuns([]);
+        setRunsError('');
+        setRunsLoading(true);
+        setLogLines([]);
+        setLogError('');
+        setLogLoading(false);
+        loadedLogKeyRef.current = '';
+        setJobNotice(`${created.name} was created.`);
+      } else if (jobID) {
+        const updated = normalizeJob(await UpdateJob(jobID, new wailsMain.JobDefinitionInput(input)));
+        jobsRequestRef.current += 1;
+        setJobsLoading(false);
+        setJobsRefreshing(false);
+        setJobs((current) => current.map((job) => job.id === updated.id ? updated : job).sort(compareNextRun));
+        setJobsError('');
+        setJobNotice(`${updated.name} was saved.`);
+      }
+      setJobEditorMode(null);
+    } catch (caught) {
+      setJobEditorError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setJobMutationBusy(false);
+    }
+  };
+
+  const toggleJobEnabled = async (job: Job) => {
+    if (jobMutationBusy) return;
+    setJobMutationBusy(true);
+    setJobActionError('');
+    setJobNotice('');
+    try {
+      const updated = normalizeJob(await UpdateJob(job.id, new wailsMain.JobDefinitionInput({
+        name: job.name,
+        description: job.description,
+        kind: job.kind,
+        projectName: job.projectName ?? '',
+        enabled: !job.enabled,
+        schedule: job.schedule,
+      })));
       jobsRequestRef.current += 1;
       setJobsLoading(false);
       setJobsRefreshing(false);
-      setJobs((current) => current.map((job) => job.id === updated.id ? updated : job));
-      if (selectedJobIdRef.current === jobID) {
-        setEditingSchedule(false);
-        setScheduleNotice('Schedule saved. The next run time has been updated.');
-      }
+      setJobs((current) => current.map((item) => item.id === updated.id ? updated : item).sort(compareNextRun));
+      setJobsError('');
+      setJobNotice(`${updated.name} ${updated.enabled ? 'resumed' : 'paused'}.`);
     } catch (caught) {
-      if (selectedJobIdRef.current === jobID) {
-        setScheduleError(caught instanceof Error ? caught.message : String(caught));
-      }
+      setJobActionError(caught instanceof Error ? caught.message : String(caught));
     } finally {
-      setScheduleSaving(false);
+      setJobMutationBusy(false);
+    }
+  };
+
+  const deleteJob = async (job: Job) => {
+    if (jobMutationBusy) return;
+    setJobMutationBusy(true);
+    setJobActionError('');
+    setJobNotice('');
+    try {
+      await DeleteJob(job.id);
+      const remainingJobs = jobs.filter((item) => item.id !== job.id).sort(compareNextRun);
+      const nextSelectedJob = remainingJobs[0] ?? null;
+      jobsRequestRef.current += 1;
+      setJobsLoading(false);
+      setJobsRefreshing(false);
+      setJobs(remainingJobs);
+      setJobsError('');
+      selectedJobIdRef.current = nextSelectedJob?.id ?? '';
+      setSelectedJobId(nextSelectedJob?.id ?? '');
+      selectedRunIdRef.current = '';
+      setSelectedRunId('');
+      setRuns([]);
+      setRunsError('');
+      setRunsLoading(Boolean(nextSelectedJob));
+      setLogLines([]);
+      setLogError('');
+      setLogLoading(false);
+      loadedLogKeyRef.current = '';
+      setJobEditorMode(null);
+      setPendingDeleteJobId('');
+      setJobNotice(`${job.name} was deleted.`);
+    } catch (caught) {
+      setJobActionError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setJobMutationBusy(false);
     }
   };
 
@@ -340,12 +660,37 @@ export function JobsView() {
         <div>
           <p className="eyebrow">SCHEDULE</p>
           <h1 id="jobs-title">Scheduled jobs</h1>
-          <p>See what runs next, inspect recent results, and adjust a schedule.</p>
+          <p>Manage job definitions, see what runs next, and inspect recent results.</p>
         </div>
-        <button type="button" className="secondary-button jobs-refresh-button" onClick={() => void refreshJobs(true)} disabled={jobsLoading || jobsRefreshing}>
-          <Icon name="refresh" />{jobsLoading ? 'Loading jobs…' : jobsRefreshing ? 'Refreshing…' : 'Refresh jobs'}
-        </button>
+        <div className="jobs-heading-actions">
+          <button
+            type="button"
+            className={jobEditorMode === 'create' ? 'secondary-button jobs-create-button' : 'primary-button jobs-create-button'}
+            onClick={() => jobEditorMode === 'create' ? cancelJobEditor() : openCreateJob()}
+            aria-expanded={jobEditorMode === 'create'}
+            aria-controls={jobEditorMode === 'create' ? 'job-create-form' : undefined}
+            disabled={jobMutationBusy}
+          >
+            {jobEditorMode === 'create' ? 'Close new job form' : 'New job'}
+          </button>
+          <button type="button" className="secondary-button jobs-refresh-button" onClick={() => void refreshJobs(true)} disabled={jobsLoading || jobsRefreshing || jobMutationBusy}>
+            <Icon name="refresh" />{jobsLoading ? 'Loading jobs…' : jobsRefreshing ? 'Refreshing…' : 'Refresh jobs'}
+          </button>
+        </div>
       </header>
+
+      {jobNotice && <p className="jobs-page-notice" role="status" aria-live="polite">{jobNotice}</p>}
+      {jobEditorMode === 'create' && (
+        <JobEditorForm
+          mode="create"
+          draft={jobDraft}
+          saving={jobMutationBusy}
+          error={jobEditorError}
+          onDraftChange={(patch) => setJobDraft((current) => ({ ...current, ...patch }))}
+          onSubmit={saveJob}
+          onCancel={cancelJobEditor}
+        />
+      )}
 
       {jobsError && jobs.length > 0 && (
         <div className="jobs-error-banner" role="alert">
@@ -366,7 +711,7 @@ export function JobsView() {
       ) : jobs.length === 0 ? (
         <div className="jobs-state jobs-state-empty">
           <h2>No scheduled jobs</h2>
-          <p>No jobs are registered with this desktop app yet.</p>
+          <p>No jobs are registered yet. Use New job to add a supported check.</p>
         </div>
       ) : (
         <div className="jobs-layout">
@@ -388,13 +733,13 @@ export function JobsView() {
                     className={`jobs-timeline-item${selected ? ' is-selected' : ''}`}
                     onClick={() => selectJob(job.id)}
                     aria-pressed={selected}
-                    disabled={scheduleSaving}
+                    disabled={jobMutationBusy}
                   >
                     <span className="jobs-time-mark" aria-hidden="true" />
                     <time className="jobs-next-time" dateTime={job.nextRunAt} title={formatDateTime(job.nextRunAt)}>{formatClock(job.nextRunAt)}</time>
                     <span className="jobs-timeline-copy">
                       <strong>{job.name}</strong>
-                      <small>{job.description || formatInterval(job.schedule)}</small>
+                      <small>{job.enabled ? (job.description || formatInterval(job.schedule)) : `Paused · ${job.description || formatInterval(job.schedule)}`}</small>
                     </span>
                   </button>
                 );
@@ -409,13 +754,14 @@ export function JobsView() {
                   <div className="jobs-detail-title-copy">
                     <p className="eyebrow">JOB</p>
                     <h2 id="job-detail-title" title={selectedJob.name}>{selectedJob.name}</h2>
+                    <p className="jobs-kind-summary">{jobKindLabel(selectedJob.kind)} <span>{selectedJob.enabled ? 'Enabled' : 'Paused'}</span></p>
                     {selectedJob.description && <p>{selectedJob.description}</p>}
                   </div>
                   <button
                     type="button"
                     className="jobs-run-now-button"
                     onClick={() => void runJobNow(selectedJob)}
-                    disabled={pendingManualRunIds.has(selectedJob.id) || scheduleSaving}
+                    disabled={pendingManualRunIds.has(selectedJob.id) || jobMutationBusy}
                     aria-busy={pendingManualRunIds.has(selectedJob.id)}
                     aria-label={`Run ${selectedJob.name} now`}
                   >
@@ -439,51 +785,60 @@ export function JobsView() {
                       <h3 id="job-schedule-title">Schedule</h3>
                       <p className="jobs-schedule-summary">{formatInterval(selectedJob.schedule)}</p>
                     </div>
-                    {!editingSchedule && <button type="button" className="jobs-edit-button" onClick={startScheduleEdit}>Edit schedule</button>}
+                    {jobEditorMode !== 'edit' && (
+                      <div className="jobs-management-actions" role="group" aria-label="Manage selected job">
+                        <button type="button" className="jobs-edit-button" onClick={openEditJob} disabled={jobMutationBusy}>Edit job</button>
+                        <button
+                          type="button"
+                          className="jobs-edit-button"
+                          onClick={() => void toggleJobEnabled(selectedJob)}
+                          aria-pressed={!selectedJob.enabled}
+                          disabled={jobMutationBusy}
+                        >
+                          {selectedJob.enabled ? 'Pause job' : 'Resume job'}
+                        </button>
+                        {pendingDeleteJobId !== selectedJob.id && (
+                          <button
+                            type="button"
+                            className="jobs-edit-button jobs-delete-button"
+                            onClick={() => { setPendingDeleteJobId(selectedJob.id); setJobActionError(''); setJobNotice(''); }}
+                            disabled={jobMutationBusy}
+                          >
+                            Delete job
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <p className="jobs-next-run"><span>Next run</span><time dateTime={selectedJob.nextRunAt}>{formatDateTime(selectedJob.nextRunAt)}</time></p>
 
-                  {editingSchedule && (
-                    <form className="jobs-schedule-form" onSubmit={saveSchedule}>
-                      <div className="jobs-schedule-fields">
-                        <label>
-                          Interval <span>(minutes)</span>
-                          <input
-                            type="number"
-                            min="1"
-                            max="1440"
-                            step="1"
-                            required
-                            value={scheduleDraft.intervalMinutes}
-                            onChange={(event) => setScheduleDraft((current) => ({ ...current, intervalMinutes: event.target.value }))}
-                            aria-describedby="job-schedule-hint"
-                            disabled={scheduleSaving}
-                          />
-                        </label>
-                        <label>
-                          Offset <span>(minutes)</span>
-                          <input
-                            type="number"
-                            min="0"
-                            max={Math.max(0, (Number(scheduleDraft.intervalMinutes) || 1) - 1)}
-                            step="1"
-                            required
-                            value={scheduleDraft.offsetMinutes}
-                            onChange={(event) => setScheduleDraft((current) => ({ ...current, offsetMinutes: event.target.value }))}
-                            aria-describedby="job-schedule-hint"
-                            disabled={scheduleSaving}
-                          />
-                        </label>
-                      </div>
-                      <p id="job-schedule-hint" className="jobs-form-hint">Use 1–1440 whole minutes; offset must be less than the interval.</p>
-                      {scheduleError && <p className="jobs-inline-error" role="alert">{scheduleError}</p>}
-                      <div className="jobs-form-actions">
-                        <button type="button" className="secondary-button" onClick={() => { setEditingSchedule(false); setScheduleError(''); }} disabled={scheduleSaving}>Cancel</button>
-                        <button type="submit" className="primary-button jobs-save-button" disabled={scheduleSaving}>{scheduleSaving ? 'Saving…' : 'Save schedule'}</button>
-                      </div>
-                    </form>
+                  {jobEditorMode === 'edit' && (
+                    <JobEditorForm
+                      mode="edit"
+                      draft={jobDraft}
+                      saving={jobMutationBusy}
+                      error={jobEditorError}
+                      onDraftChange={(patch) => setJobDraft((current) => ({ ...current, ...patch }))}
+                      onSubmit={saveJob}
+                      onCancel={cancelJobEditor}
+                    />
                   )}
-                  {scheduleNotice && <p className="jobs-inline-success" role="status">{scheduleNotice}</p>}
+
+                  {pendingDeleteJobId === selectedJob.id && jobEditorMode !== 'edit' && (
+                    <div className="jobs-delete-confirmation" role="group" aria-labelledby="job-delete-confirm-title">
+                      <div>
+                        <h4 id="job-delete-confirm-title">Delete {selectedJob.name}?</h4>
+                        <p>The job and its saved run history will be removed. This cannot be undone.</p>
+                      </div>
+                      <div className="jobs-form-actions">
+                        <button type="button" className="secondary-button" onClick={() => { setPendingDeleteJobId(''); setJobActionError(''); }} disabled={jobMutationBusy}>Keep job</button>
+                        <button type="button" className="jobs-confirm-delete-button" onClick={() => void deleteJob(selectedJob)} disabled={jobMutationBusy}>
+                          {jobMutationBusy ? 'Deleting…' : 'Delete job'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {jobActionError && <p className="jobs-inline-error" role="alert" aria-live="assertive">{jobActionError}</p>}
                 </section>
 
                 <section className="jobs-runs-section" aria-labelledby="job-runs-title">
