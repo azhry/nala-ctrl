@@ -107,10 +107,24 @@ export interface JobRun {
 
 export type JobRunStatus = 'running' | 'healthy' | 'unhealthy' | 'failed';
 
+export type JobKind = 'project-health' | 'minikube-port-forwards' | 'openchamber-free-usage';
+
+export interface JobDefinitionInput {
+  name: string;
+  description: string;
+  kind: JobKind;
+  projectName: string;
+  enabled: boolean;
+  schedule: JobSchedule;
+}
+
 export interface Job {
   id: string;
   name: string;
   description: string;
+  kind: JobKind;
+  projectName?: string;
+  enabled: boolean;
   schedule: JobSchedule;
   nextRunAt: string;
   lastRun?: JobRun;

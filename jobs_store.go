@@ -8,9 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
-const jobsFileVersion = 1
+const (
+	jobsFileVersion       = 2
+	legacyJobsFileVersion = 1
+)
 
 type jobsFile struct {
 	Version int         `json:"version"`
@@ -19,8 +23,11 @@ type jobsFile struct {
 
 type storedJob struct {
 	ID           string            `json:"id"`
+	Kind         string            `json:"kind"`
 	Name         string            `json:"name"`
 	Description  string            `json:"description"`
+	ProjectName  string            `json:"projectName,omitempty"`
+	Enabled      bool              `json:"enabled"`
 	Schedule     JobSchedule       `json:"schedule"`
 	NextRunAt    time.Time         `json:"nextRunAt"`
 	Runs         []storedJobRun    `json:"runs"`
@@ -56,23 +63,48 @@ func (s *JobScheduler) loadOrSeedLocked(now time.Time) error {
 	if err := json.Unmarshal(data, &saved); err != nil {
 		return fmt.Errorf("decode saved jobs: %w", err)
 	}
-	if saved.Version != jobsFileVersion {
+	if saved.Version != legacyJobsFileVersion && saved.Version != jobsFileVersion {
 		return fmt.Errorf("unsupported saved jobs version %d", saved.Version)
 	}
+	if saved.Version == legacyJobsFileVersion {
+		if err := migrateLegacyJobs(&saved); err != nil {
+			return err
+		}
+	}
 	jobsByID := make(map[string]storedJob, len(saved.Jobs))
+	loaded := make([]storedJob, 0, len(saved.Jobs))
 	for _, job := range saved.Jobs {
-		definition, known := definitionForID(job.ID)
-		if !known {
-			return fmt.Errorf("saved job %q is not supported", job.ID)
+		if job.ID == "" {
+			return errors.New("saved jobs contain a job without an identifier")
+		}
+		job.Name = strings.TrimSpace(job.Name)
+		if job.Name == "" || utf8.RuneCountInString(job.Name) > jobNameLimit {
+			return fmt.Errorf("saved job %q has an invalid name", job.ID)
+		}
+		job.Description = strings.TrimSpace(job.Description)
+		if utf8.RuneCountInString(job.Description) > jobDescriptionLimit {
+			return fmt.Errorf("saved job %q has an invalid description", job.ID)
 		}
 		if _, duplicate := jobsByID[job.ID]; duplicate {
 			return fmt.Errorf("saved job %q is duplicated", job.ID)
 		}
+		if !knownJobKind(job.Kind) {
+			return fmt.Errorf("saved job %q has an unsupported type", job.ID)
+		}
+		if job.Kind == jobKindProjectHealth {
+			job.ProjectName = strings.TrimSpace(job.ProjectName)
+			if job.ProjectName == "" || utf8.RuneCountInString(job.ProjectName) > jobProjectNameLimit {
+				return fmt.Errorf("saved job %q has an invalid project name", job.ID)
+			}
+		} else {
+			job.ProjectName = ""
+		}
+		if err := jobDefinitionConflict(loaded, job.Name, job.Kind, job.ProjectName, ""); err != nil {
+			return fmt.Errorf("saved job %q conflicts with another job", job.ID)
+		}
 		if err := validateJobSchedule(job.Schedule); err != nil {
 			return fmt.Errorf("saved job %q has an invalid schedule", job.ID)
 		}
-		job.Name = definition.name
-		job.Description = definition.description
 		if job.Runs == nil {
 			job.Runs = []storedJobRun{}
 		}
@@ -114,20 +146,34 @@ func (s *JobScheduler) loadOrSeedLocked(now time.Time) error {
 			job.NextRunAt = advanceJobRunAt(job.Schedule, job.NextRunAt, now)
 		}
 		jobsByID[job.ID] = job
+		loaded = append(loaded, job)
 	}
-	s.state = jobsFile{Version: jobsFileVersion, Jobs: make([]storedJob, 0, len(defaultJobDefinitions))}
-	for _, definition := range defaultJobDefinitions {
-		job, exists := jobsByID[definition.id]
-		if !exists {
-			job = storedJob{
-				ID: definition.id, Name: definition.name, Description: definition.description,
-				Schedule: definition.schedule, NextRunAt: nextJobRunAt(definition.schedule, now),
-				Runs: []storedJobRun{},
-			}
-		}
-		s.state.Jobs = append(s.state.Jobs, job)
-	}
+	s.state = jobsFile{Version: jobsFileVersion, Jobs: loaded}
 	return writeJobsFile(s.path, s.state)
+}
+
+func knownJobKind(kind string) bool {
+	return kind == jobKindMinikubePortForward || kind == jobKindProjectHealth || kind == jobKindOpenChamberUsage
+}
+
+// migrateLegacyJobs upgrades the original fixed-definition file. Version 1
+// stored only the six known identifiers, so their kind and project come from
+// the starter definitions and every migrated job is enabled.
+func migrateLegacyJobs(saved *jobsFile) error {
+	for i := range saved.Jobs {
+		job := &saved.Jobs[i]
+		starter, known := starterJobForID(job.ID)
+		if !known {
+			return fmt.Errorf("saved job %q is not supported", job.ID)
+		}
+		job.Kind = starter.kind
+		job.ProjectName = starter.projectName
+		job.Enabled = true
+		job.Name = starter.name
+		job.Description = starter.description
+	}
+	saved.Version = jobsFileVersion
+	return nil
 }
 
 func validJobRunStatus(status string) bool {
@@ -135,10 +181,11 @@ func validJobRunStatus(status string) bool {
 }
 
 func seededJobsFile(now time.Time) jobsFile {
-	state := jobsFile{Version: jobsFileVersion, Jobs: make([]storedJob, 0, len(defaultJobDefinitions))}
-	for _, definition := range defaultJobDefinitions {
+	state := jobsFile{Version: jobsFileVersion, Jobs: make([]storedJob, 0, len(starterJobDefinitions))}
+	for _, definition := range starterJobDefinitions {
 		state.Jobs = append(state.Jobs, storedJob{
-			ID: definition.id, Name: definition.name, Description: definition.description,
+			ID: definition.id, Kind: definition.kind, Name: definition.name, Description: definition.description,
+			ProjectName: definition.projectName, Enabled: true,
 			Schedule: definition.schedule, NextRunAt: nextJobRunAt(definition.schedule, now),
 			Runs: []storedJobRun{},
 		})

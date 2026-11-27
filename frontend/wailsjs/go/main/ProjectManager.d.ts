@@ -6,6 +6,10 @@ export function ChooseFolder():Promise<main.WorkspaceState>;
 
 export function CreateConfig(arg1:main.CreateProjectInput):Promise<main.WorkspaceState>;
 
+export function CreateJob(arg1:main.JobDefinitionInput):Promise<main.Job>;
+
+export function DeleteJob(arg1:string):Promise<void>;
+
 export function FixDocker():Promise<void>;
 
 export function GetHeadlessAPIStatus():Promise<main.HeadlessAPIStatus>;
@@ -42,4 +46,4 @@ export function SyncProjectGitWithMain(arg1:string):Promise<main.GitBranchState>
 
 export function TerminatePortOwnerAndRun(arg1:string,arg2:number,arg3:number):Promise<main.RunResult>;
 
-export function UpdateJobSchedule(arg1:string,arg2:main.JobSchedule):Promise<main.Job>;
+export function UpdateJob(arg1:string,arg2:main.JobDefinitionInput):Promise<main.Job>;
